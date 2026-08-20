@@ -1,0 +1,39 @@
+[project]
+name = "steam-vibe-backend"
+version = "0.1.0"
+description = "Semantic search over ~120k Steam games"
+requires-python = ">=3.14"
+
+# Weekend 1 only: load the data, embed it, search it from a terminal.
+# FastAPI arrives in Weekend 2, in its own commit.
+dependencies = [
+    "sqlalchemy>=2.0.36",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3.6",
+    "alembic>=1.14",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "httpx>=0.28",
+    "tqdm>=4.67",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.14",
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint.per-file-ignores]
+# UP037 wants the quotes removed from Mapped[list["GameTag"]]. Don't: string
+# forward references are SQLAlchemy's documented idiom for models defined later
+# in the file, and they resolve at mapper-configuration time rather than at
+# class creation. Removing them trades a working pattern for a lint score.
+"app/models.py" = ["UP037"]
+
+[tool.mypy]
+python_version = "3.14"
+# CLAUDE.md requires a type hint on every function signature. This enforces it.
+disallow_untyped_defs = true
