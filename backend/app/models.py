@@ -47,7 +47,29 @@ class Game(Base):
 
     # Kaggle scrapes Steam's US storefront. price_eur arrives in Weekend 3 from
     # the storefront API with ?cc=de — do not treat this as euros.
+    #
+    # This is the price on the day of the scrape, and 37.7% of paid games were
+    # mid-sale. Filter on list_price_usd, not this.
     price_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+
+    # Percent off at scrape time. Source stores this as str for 102,759 records
+    # and int for 36,205, so the loader coerces.
+    discount_pct: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+
+    # What the game normally costs. Derived, and approximate to about a cent:
+    # Steam rounds sale prices down, so a $14.99 game at -40% is stored as $8.99
+    # and reverses to $14.98. Immaterial for filtering, worth knowing before
+    # anyone displays it as an exact figure.
+    list_price_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        Computed(
+            "CASE WHEN discount_pct <= 0 OR discount_pct >= 100 THEN price_usd "
+            "ELSE round(price_usd / (1 - discount_pct / 100.0), 2) END",
+            persisted=True,
+        ),
+    )
 
     # Derived at ingest as (price == 0). The source has no such field, and some
     # price-0 rows are unreleased rather than genuinely free.
@@ -112,6 +134,8 @@ class Game(Base):
 
     __table_args__ = (
         Index("ix_games_price_usd", "price_usd"),
+        # What search actually filters on.
+        Index("ix_games_list_price_usd", "list_price_usd"),
         Index("ix_games_release_date", "release_date"),
         Index("ix_games_total_reviews", "total_reviews"),
         # Partial index: the embed job asks "what is left?" repeatedly, and this
