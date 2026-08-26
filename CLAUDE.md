@@ -60,7 +60,7 @@ Two categories, and I'll say which one we're in at the top of each session:
   indie games, 100% of which have tags and a description.
 - Embed every game that has a short_description or tags — 130,651 of
   138,964. The 8,313 with neither are Playtest/Closed Beta entries, not
-  games. Embedding is cheap (~35 min), so scope is generous and the
+  games. Embedding is cheap (~12 min), so scope is generous and the
   quality gate lives at query time, not ingest time.
 - Search filters price on `list_price_usd`, never `price_usd`. The Kaggle
   snapshot caught a Steam sale — 37.7% of paid games are discounted, so
@@ -71,6 +71,9 @@ Two categories, and I'll say which one we're in at the top of each session:
 - The query parser is grounded on the real tag vocabulary (top ~200 tags
   passed into the prompt). Invented tags get fuzzy-matched, then dropped —
   never returned as a filter that yields zero results.
+- In Git Bash, absolute paths passed to `docker compose exec` get rewritten by
+  MSYS (`/dev/shm` becomes `C:/Program Files/Git/dev/shm`). Escape with a
+  leading double slash: `//dev/shm`, or prefix `MSYS_NO_PATHCONV=1`.
 - Never use `localhost` in a connection string on Windows — it resolves to
   IPv6 `::1` first and costs ~2.1s per new connection. Always `127.0.0.1`.
 - The embedding client holds one long-lived `httpx.Client` and calls
@@ -80,10 +83,10 @@ Two categories, and I'll say which one we're in at the top of each session:
   tried, what fixed it.
 
 ## Current state
-Weekend 1, step 4 of 6 done (plus migration 0002).
+Weekend 1 COMPLETE. Migrations 0001-0003 applied.
 
 Environment: Python 3.14.7 via uv; Ollama native on the host serving
-`nomic-embed-text` at ~62 embeddings/sec batched; Postgres 16.15 + pgvector
+`nomic-embed-text` at ~183 embeddings/sec at batch 64; Postgres 16.15 + pgvector
 0.8.6 in Docker (`docker compose up -d db`).
 
 Data: `data/games.json` — 138,964 games. Use the JSON, not the CSV: the CSV is
@@ -102,8 +105,39 @@ Loaded: all four tables populated in 2.9 min — 138,964 games, 1,180,522 tags,
 idempotent (re-run skips) and `--reload` upserts without duplicating. Source
 has 1,320 duplicate category entries, deduped at load.
 
-Next: `ingest/embed_all.py` — batch the 130,651 `embed_text` values through
-Ollama (~35 min), then migration `0003`
-adding the HNSW index (only after embedding), then the CLI search script.
+Embedded: all 130,651 rows carry a `nomic-embed-text` vector, at ~183/sec.
+Migration `0003` built the HNSW index (`vector_cosine_ops`, m=16,
+ef_construction=64) after embedding. Verified by query plan: `Index Scan using
+ix_games_embedding_hnsw`, 3.4ms for a top-10 over 130,651 vectors. The db
+service needs `shm_size: 4gb` or the parallel build fails — see NOTES.md.
+
+Search: `app/search.py` holds the ranking (reused by Weekend 2's API, not
+rewritten), `app/embedding.py` the shared Ollama client, `app/schemas.py` the
+Pydantic result types, `search.py` the CLI. Verified against an exhaustive scan
+as ground truth.
+
+`hnsw.iterative_scan = strict_order` is set per transaction in `app/search.py`
+and is NOT optional: without it a selective filter silently returns fewer rows
+than requested (measured 4 of 10 at `--threshold 5000`). It costs latency —
+~150ms at threshold 10, ~1450ms at 5000. Watch this when Weekend 2 stacks
+filters.
+
+Failure modes: `backend/eval/failures.md`, 11 documented with mechanisms. That
+file is the raw material for `eval/queries.yaml` and for the README's "what
+does not work" section.
+
+## Carry into Weekend 2 (both cheap, both found by testing)
+1. `required_age` is missing from `games`. The source JSON has it; the 0001
+   schema omitted it. It is the column that answers "safe for a 7 year old",
+   which currently returns games tagged `Violent` and `Nudity`. Add it in the
+   same migration as the tags array.
+2. `embed_text` weights titles over tags — `{name}. {short_description} Tags:
+   ...` puts a short name first, so *EasyPianoGame* (tagged `Difficult`) ranks
+   for "easy relaxing game". Try name-last or repeated tags. One f-string plus
+   ~12 min re-embedding, and it earns a row in the Weekend 3 results table.
+
+Next: Weekend 2 — query parser (`ParsedQuery` from a local chat model, grounded
+on the real 452-tag vocabulary), FastAPI, React with editable filter chips.
+Also the deferred `games.tags text[]` + GIN migration.
 
 (update this at the end of every session)
