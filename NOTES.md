@@ -4,6 +4,28 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-08-26 — HNSW index build failed with "No space left on device"
+
+**What broke.** `alembic upgrade head` on migration 0003 died with
+`DiskFull: could not resize shared memory segment to 2144407040 bytes`. The
+host had 588GB free.
+
+**What I tried.** Read the byte count: 2,144,407,040 is exactly the 2GB set as
+`maintenance_work_mem`. Not disk at all — Docker gives a container 64MB of
+`/dev/shm` by default, and Postgres coordinates parallel workers through shared
+memory. `max_parallel_maintenance_workers = 4` made pgvector build the graph in
+a shared segment sized to maintenance_work_mem, which blew past 64MB. It
+surfaces as a disk error because /dev/shm is a filesystem.
+
+**What fixed it.** `shm_size: 4gb` on the db service in docker-compose.yml, then
+recreate the container. It is a ceiling rather than a reservation, so nothing is
+consumed until needed. Serialising the build with
+`max_parallel_maintenance_workers = 0` also avoids it, but is slower and leaves
+the same trap waiting for the next parallel operation.
+
+DDL is transactional in Postgres, so the failed CREATE INDEX rolled back
+cleanly and alembic_version stayed at 0002.
+
 ## 2026-08-26 — Every price in the database was a sale price
 
 **What broke.** Spot-checking the fresh ingest against Steam, Stardew Valley

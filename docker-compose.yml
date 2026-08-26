@@ -6,6 +6,11 @@
 services:
   db:
     image: pgvector/pgvector:pg16
+    # Docker defaults /dev/shm to 64MB. Postgres coordinates parallel workers
+    # through shared memory, so building the HNSW index with
+    # maintenance_work_mem=2GB fails with "No space left on device" — which is
+    # /dev/shm filling, not the disk. This is a limit, not a reservation.
+    shm_size: 4gb
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-steam}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-steam}
