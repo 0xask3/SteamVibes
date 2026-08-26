@@ -46,6 +46,9 @@ Two categories, and I'll say which one we're in at the top of each session:
 - `cd backend && uv run uvicorn app.main:app --reload`
 - `cd backend && uv run python -m eval.run_eval`
 - `cd frontend && npm run dev`
+- Refreshing `data/games.json`: follow `backend/ingest/README.md`. In short —
+  `alembic upgrade head`, `load_games --reload`, `embed_all`, then the two
+  SQL checks. `--reload` is required or existing games are skipped.
 
 ## Conventions
 - Embedded text per game is `{name}. {short_description} Tags: {top 15 tags
@@ -59,6 +62,10 @@ Two categories, and I'll say which one we're in at the top of each session:
   138,964. The 8,313 with neither are Playtest/Closed Beta entries, not
   games. Embedding is cheap (~35 min), so scope is generous and the
   quality gate lives at query time, not ingest time.
+- Search filters price on `list_price_usd`, never `price_usd`. The Kaggle
+  snapshot caught a Steam sale — 37.7% of paid games are discounted, so
+  `price_usd` is a sale price. `list_price_usd` is generated from it and
+  `discount_pct`, and is a cent low by construction. See NOTES.md 2026-08-26.
 - The HNSW index on `games.embedding` is built *after* bulk insert, never
   before.
 - The query parser is grounded on the real tag vocabulary (top ~200 tags
@@ -73,7 +80,7 @@ Two categories, and I'll say which one we're in at the top of each session:
   tried, what fixed it.
 
 ## Current state
-Weekend 1, step 3 of 6 done.
+Weekend 1, step 4 of 6 done (plus migration 0002).
 
 Environment: Python 3.14.7 via uv; Ollama native on the host serving
 `nomic-embed-text` at ~62 embeddings/sec batched; Postgres 16.15 + pgvector
@@ -84,13 +91,19 @@ missing 13,109 games, has a 39-vs-40 column header offset, drops tag vote
 counts, and has no `short_description` column at all.
 
 Built: `app/config.py`, `app/db.py`, `app/models.py`, and migration `0001`
-(games, game_tags, game_genres, game_categories). Verified: upgrade, downgrade
+(games, game_tags, game_genres, game_categories), plus `0002` adding
+`discount_pct` and generated `list_price_usd`. Verified: upgrade, downgrade
 to base, upgrade again; `vector(768)` and the generated `total_reviews` column
 confirmed in `\d games`; a two-row cosine ranking returns the sane order;
 `ON DELETE CASCADE` confirmed. mypy and ruff clean.
 
-Next: `ingest/load_games.py` — stream `games.json` into the four tables,
-idempotent and resumable. Then `ingest/embed_all.py`, then migration `0002`
+Loaded: all four tables populated in 2.9 min — 138,964 games, 1,180,522 tags,
+611,783 categories, 376,325 genres; 130,651 rows carry `embed_text`. Verified
+idempotent (re-run skips) and `--reload` upserts without duplicating. Source
+has 1,320 duplicate category entries, deduped at load.
+
+Next: `ingest/embed_all.py` — batch the 130,651 `embed_text` values through
+Ollama (~35 min), then migration `0003`
 adding the HNSW index (only after embedding), then the CLI search script.
 
 (update this at the end of every session)

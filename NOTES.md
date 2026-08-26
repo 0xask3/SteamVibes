@@ -4,6 +4,31 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-08-26 — Every price in the database was a sale price
+
+**What broke.** Spot-checking the fresh ingest against Steam, Stardew Valley
+read $8.99 where its real price is $14.99. Not a parsing error — the column
+held exactly what the source said.
+
+**What I tried.** Checked the source record and found a `discount` field the
+loader had dropped: `price=8.99, discount=40`. So `price` is the price on the
+day of the scrape, and the scrape caught a Steam sale. 41,712 of 110,709 paid
+games (37.7%) were discounted. Filtering "under $20" on it wrongly admitted
+3,004 games — Rust reads as $19.99 and actually costs $39.99.
+
+**What fixed it.** Migration `0002` adds `discount_pct` plus a generated
+`list_price_usd` reversing the discount, guarded at both ends (0 means no sale;
+100 would divide by zero, and 6 games are at 100%). Loader coerces `discount`,
+which the source stores as str for 102,759 records and int for 36,205. Search
+filters on `list_price_usd`.
+
+Two things worth remembering. Derived list price is a cent low — Steam rounds
+sale prices down, so $14.99 at -40% stores as $8.99 and reverses to $14.98;
+fine for filtering, don't display it as exact. And when verifying the fix,
+Python and Postgres disagreed on one row: Tomb Raider GOTY at $2.00 / -90%.
+Python's float gave 20.000000000000004 and excluded it; Postgres' numeric gave
+exactly 20.00. Postgres was right. That is what `numeric(10,2)` is for.
+
 ## 2026-08-20 — Embeddings ran at 0.5/sec on a 4080 SUPER
 
 **What broke.** First smoke test of Ollama embeddings took 2.1s per call.
