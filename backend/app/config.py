@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     embed_model: str = "nomic-embed-text"
     embed_dim: int = 768
 
+    # How long Ollama keeps the model in VRAM after a request. Its default is
+    # 5m, after which the next query pays an ~18s cold load - which dwarfs the
+    # ~20ms the embedding itself takes. The model is 323MB, so holding it is
+    # cheap. "-1" never unloads; "0" unloads immediately.
+    ollama_keep_alive: str = "30m"
+
     # Games with total_reviews <= this are hidden from search results. A knob,
     # not a constant — Weekend 3 measures recall at several values.
     review_threshold: int = 10

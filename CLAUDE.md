@@ -66,8 +66,14 @@ Two categories, and I'll say which one we're in at the top of each session:
   snapshot caught a Steam sale — 37.7% of paid games are discounted, so
   `price_usd` is a sale price. `list_price_usd` is generated from it and
   `discount_pct`, and is a cent low by construction. See NOTES.md 2026-08-26.
-- The HNSW index on `games.embedding` is built *after* bulk insert, never
-  before.
+- The HNSW index on `games.embedding` is built *after* any bulk write, never
+  before — UPDATE as well as INSERT. It is 510MB over 130,651 vectors, and a
+  full-table UPDATE forces a new index entry per row, so a backfill or a
+  `--reload` with the index present takes many minutes instead of seconds.
+  `alembic downgrade 0004` drops it, `upgrade head` rebuilds it.
+- Tag strings must match exactly: the real tags are `Co-op` and `Base-Building`,
+  not `Base Building`. A wrong string returns zero rows with no error, which is
+  why the parser is grounded on the real vocabulary.
 - The query parser is grounded on the real tag vocabulary (top ~200 tags
   passed into the prompt). Invented tags get fuzzy-matched, then dropped —
   never returned as a filter that yields zero results.
@@ -78,12 +84,34 @@ Two categories, and I'll say which one we're in at the top of each session:
   IPv6 `::1` first and costs ~2.1s per new connection. Always `127.0.0.1`.
 - The embedding client holds one long-lived `httpx.Client` and calls
   `/api/embed` with a batch. One-text-per-request is 30x slower.
+- `uv run alembic check` belongs beside mypy and ruff. It is the only one of
+  the three that compares the code against the real database. It caught that
+  `ix_games_embedding_hnsw` existed in Postgres but not in `models.py`, which
+  meant the next `--autogenerate` would have proposed dropping a 510MB index.
+- Array columns use `sqlalchemy.dialects.postgresql.ARRAY`, never
+  `sqlalchemy.ARRAY`. Only the dialect type implements `.contains()` (`@>`) and
+  `.overlap()` (`&&`); the base type raises at runtime and mypy does not catch
+  it. Same DDL, so switching needs no migration.
 - Commit per feature, not per session.
 - When something breaks, three lines in `NOTES.md`: what broke, what I
   tried, what fixed it.
 
 ## Current state
-Weekend 1 COMPLETE. Migrations 0001-0003 applied.
+
+Weekend 1 COMPLETE. Weekend 2: schema and structured filtering done, parser
+next. Migrations 0001-0005.
+
+Filters: `app/search.py` takes a `ParsedQuery` (`app/schemas.py`) and applies
+price, platform, tag, year, age and multiplayer in SQL before pgvector ranks
+the survivors. Driven by CLI flags today; the parser fills the same object, so
+there is one code path, not two. `--platform linux --max-price 20
+--multiplayer` filters 130,651 rows to 1,867 and returns in ~417ms.
+`multiplayer` reads `game_categories` using the full co-op set, not
+`Multi-player` alone — 744 of 22,127 co-op games lack that category.
+Unknown tags are reported rather than silently returning nothing.
+
+`OLLAMA_KEEP_ALIVE=30m`: Ollama's 5m default evicts the model, and an idle CLI
+then spends ~18s reloading it to do ~20ms of work. See NOTES.md 2026-08-29.
 
 Environment: Python 3.14.7 via uv; Ollama native on the host serving
 `nomic-embed-text` at ~183 embeddings/sec at batch 64; Postgres 16.15 + pgvector
@@ -127,10 +155,10 @@ file is the raw material for `eval/queries.yaml` and for the README's "what
 does not work" section.
 
 ## Carry into Weekend 2 (both cheap, both found by testing)
-1. `required_age` is missing from `games`. The source JSON has it; the 0001
-   schema omitted it. It is the column that answers "safe for a 7 year old",
-   which currently returns games tagged `Violent` and `Nudity`. Add it in the
-   same migration as the tags array.
+1. DONE. Migration `0004` added `required_age` and `games.tags text[]` with a
+   GIN index, backfilled from `game_tags`; `0005` rebuilds HNSW afterwards.
+   `0004` drops HNSW first — see the convention above. Only 1,321 games have
+   `required_age > 0`, so age filtering must also exclude mature tags.
 2. `embed_text` weights titles over tags — `{name}. {short_description} Tags:
    ...` puts a short name first, so *EasyPianoGame* (tagged `Difficult`) ranks
    for "easy relaxing game". Try name-last or repeated tags. One f-string plus

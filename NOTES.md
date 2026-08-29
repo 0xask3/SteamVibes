@@ -4,6 +4,31 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-08-29 — A search took 18 seconds, and none of it was searching
+
+**What broke.** `search.py "co-op base builder" --platform linux --max-price 20
+--multiplayer` reported `embed 18017ms | query 417ms`. Filtering and ranking
+were fine; embedding one short string took eighteen seconds.
+
+**What I tried.** `ollama ps` showed the model resident with
+`UNTIL: 4 minutes from now`. Ollama's default `keep_alive` is 5 minutes, after
+which it evicts the model from VRAM. An idle CLI therefore pays a cold model
+load — ~18s — to do ~20ms of arithmetic. Nothing was wrong with the code.
+
+**What fixed it.** Pass `keep_alive` in the `/api/embed` body, from a new
+`OLLAMA_KEEP_ALIVE` setting defaulting to `30m`. The model is 323MB against
+16GB of VRAM, so holding it is free in practice. Set `-1` never to unload.
+
+Worth remembering when the API arrives: a server that is idle overnight pays
+this on its first request of the morning. Warming the model at startup, or
+`-1`, is the fix there.
+
+Separately, that run measured `query 417ms` against the 19.6ms I had estimated
+while planning. The estimate used an existing row's embedding as the probe
+vector, whose neighbours already matched the filters. A real query vector lands
+in sparser space and iterative_scan works harder. The planning number was
+optimistic by 20x — benchmark with real queries.
+
 ## 2026-08-26 — HNSW index build failed with "No space left on device"
 
 **What broke.** `alembic upgrade head` on migration 0003 died with

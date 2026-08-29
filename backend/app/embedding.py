@@ -27,7 +27,14 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
         return []
 
     response = _client.post(
-        "/api/embed", json={"model": settings.embed_model, "input": texts}
+        "/api/embed",
+        json={
+            "model": settings.embed_model,
+            "input": texts,
+            # Without this Ollama evicts the model after 5 minutes idle, and the
+            # next query spends ~18s reloading it to do ~20ms of work.
+            "keep_alive": settings.ollama_keep_alive,
+        },
     )
     response.raise_for_status()
     vectors: list[list[float]] = response.json()["embeddings"]
