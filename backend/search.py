@@ -1,14 +1,15 @@
 """Search the games database from a terminal.
 
     uv run python search.py "cozy farming game with fishing"
-    uv run python search.py "co-op base builder" --platform linux --max-price 20
+    uv run python search.py "co-op base builder under 20 dollars on linux" --parse
     uv run python search.py "something for a kid" --max-age 7 --exclude-tag Violent
 
 Presentation only. The ranking lives in app/search.py, so the API in the next
 step serves identical logic rather than a second copy.
 
-The flags exist so filtering can be tested without an LLM in the way. When the
-parser arrives it fills the same ParsedQuery these flags build.
+--parse asks the chat model to fill the ParsedQuery; the flags fill the same
+object by hand and override anything it decided. Keeping the unparsed path is
+what makes the parser's contribution measurable rather than assumed.
 """
 
 import argparse
@@ -169,7 +170,7 @@ def main() -> None:
         help="Use the chat model to extract filters from the query.",
     )
     parser.add_argument(
-        "--model", help="Override CHAT_MODEL for --parse, e.g. qwen2.5:14b."
+        "--model", help="Override CHAT_MODEL for --parse, e.g. qwen3.5:4b."
     )
     parser.add_argument("--json", action="store_true", help="Emit raw JSON.")
     args = parser.parse_args()

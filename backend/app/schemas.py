@@ -15,8 +15,8 @@ Platform = Literal["windows", "mac", "linux"]
 class ParsedQuery(BaseModel):
     """A search request split into a vibe and hard constraints.
 
-    Filled by hand from CLI flags today and by a local chat model in the next
-    step. Same object either way, so the parser becomes another way to produce
+    Filled by hand from CLI flags or by app/query_parser.py from natural
+    language. Same object either way, so the parser is another way to produce
     one rather than a second implementation of filtering.
 
     Prices are USD, not EUR as BUILD_PLAN.md assumed - the Kaggle source is

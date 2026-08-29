@@ -1,7 +1,7 @@
 """Hybrid search: structured filters in SQL, vibe ranking in pgvector.
 
-The filters come from a ParsedQuery, built by hand from CLI flags today and by
-a local chat model in the next step. One code path either way.
+The filters come from a ParsedQuery, built either by hand from CLI flags or by
+app/query_parser.py from natural language. One code path either way.
 
 Read the query construction carefully - this is the file where a mistake
 produces plausible results forever rather than an error.
@@ -23,6 +23,12 @@ TOP_TAGS_SHOWN = 5
 # category against 5,263 with the `Co-op` tag. The list is broader than
 # `Multi-player` alone because 744 of 22,127 co-op/PvP games do not carry that
 # category - filtering on it by itself would silently miss them.
+#
+# `Remote Play Together` is deliberately NOT here. It is a streaming feature,
+# not a multiplayer mode: it sends one player's screen to a friend, so a
+# Single-player game qualifies. Including it added 637 games that carry no
+# real multiplayer category at all - HEXAROMA: Village Builder ranked 8th for
+# "co-op base builder" on `Single-player, Remote Play Together` alone.
 MULTIPLAYER_CATEGORIES = (
     "Multi-player",
     "Co-op",
@@ -30,7 +36,6 @@ MULTIPLAYER_CATEGORIES = (
     "Shared/Split Screen",
     "PvP",
     "Online PvP",
-    "Remote Play Together",
 )
 
 
@@ -80,8 +85,11 @@ def _unknown_tags(tags: list[str]) -> list[str]:
     """Tags that appear nowhere in the real vocabulary.
 
     Reported rather than left to return zero rows silently. `Base Building` is
-    not a tag; `Base-Building` is. Exact matching here is the honest
-    placeholder for the fuzzy matching the parser will need.
+    not a tag; `Base-Building` is.
+
+    This guards the hand-typed flag path. Tags arriving from the parser are
+    already exact - app/query_parser.py fuzzy-matches, then drops what it
+    cannot resolve - so with --parse this list is normally empty.
     """
     if not tags:
         return []

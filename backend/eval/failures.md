@@ -408,3 +408,31 @@ queries.
 
 Selection was on evidence, not size: 4b beat 9b on #16 and on `Souls-like`, and
 was a live contender until the two `(none)` rows decided it.
+
+### 18. `Remote Play Together` counted as multiplayer
+
+**Query.** `co-op base builder under 20 dollars that runs on linux --parse`
+
+**Got.** Position 8 was HEXAROMA: Village Builder, whose full category list is
+`Single-player, Remote Play Together, Family Sharing, Save Anytime, ...` - no
+multiplayer category of any kind.
+
+**Why.** `MULTIPLAYER_CATEGORIES` in `app/search.py` included
+`Remote Play Together`, which is a *streaming* feature: it sends one player's
+screen to a friend. A Single-player game qualifies for it. Measured against the
+corpus:
+
+    matched by the filter      23,750
+    genuinely multiplayer      23,113
+    false positives (RPT only)     637
+
+**Fixed by.** Dropping that one entry. The other six still cover the case the
+wide list was built for - 744 of 22,127 co-op/PvP games lack `Multi-player`
+itself, and those are unaffected.
+
+**Worth noting how this was found.** `eval/compare_parsers.py` could never have
+caught it: it inspects the `ParsedQuery` and stops there. The parser was
+entirely correct here - `max_price=20`, `platforms=["linux"]`,
+`multiplayer=true`, `semantic_query="base builder"`. The filter underneath it
+was wrong. Checking parsed filters and checking returned games are two
+different tests, and only the second one found this.

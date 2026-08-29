@@ -1,7 +1,7 @@
 """Run the same queries through several chat models and compare the filters.
 
     uv run python -m eval.compare_parsers
-    uv run python -m eval.compare_parsers --models qwen2.5:7b qwen2.5:14b
+    uv run python -m eval.compare_parsers --models qwen3.5:9b qwen3.5:4b
 
 Answers "which model should parse queries" with evidence rather than opinion.
 Prints each model's ParsedQuery per query, flags disagreements, and times them,
@@ -47,7 +47,7 @@ def main() -> None:
         "--models",
         nargs="+",
         default=[settings.chat_model],
-        help="Models to compare, e.g. qwen2.5:7b qwen2.5:14b",
+        help="Models to compare, e.g. qwen3.5:9b qwen3.5:4b",
     )
     argp.add_argument("--verbose", action="store_true", help="Show parser logs.")
     args = argp.parse_args()

@@ -41,8 +41,8 @@ class Settings(BaseSettings):
     # Qwen3.5 is a hybrid reasoning model: it emits a thinking block before the
     # answer unless told not to. The parser sits in the request path and the
     # task is extraction, not reasoning, so thinking is latency we do not buy
-    # anything with. None omits the flag entirely, which is required for models
-    # that predate it - Ollama rejects `think` outright for qwen2.5.
+    # anything with. None omits the flag entirely, which a model with no
+    # thinking mode requires - Ollama 400s on `think` rather than ignoring it.
     chat_think: bool | None = False
 
     # The parser's system prompt carries all 452 tags - ~1,400 tokens of
