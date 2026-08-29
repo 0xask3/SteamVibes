@@ -263,3 +263,40 @@ queries, not with rows already indexed.
 far more selective than this. If latency becomes a problem, the options are
 raising `hnsw.max_scan_tuples`, pre-filtering to app_ids and searching within
 them, or accepting `relaxed_order`. Measure before choosing.
+
+**Measured.** `"co-op base builder" --platform linux --max-price 20
+--multiplayer` filters to 1,867 of 130,651 rows (1.4%) and takes **417ms**.
+Acceptable for now. Note that a probe using an existing row's embedding
+suggested 19.6ms — optimistic by 20x, because that vector's neighbours already
+matched the filters. Real query vectors land in sparser space.
+
+---
+
+## Resolved by structured filters (2026-08-29)
+
+`app/search.py` now takes a `ParsedQuery` and applies price, platform, tag,
+year, age and multiplayer filters in SQL before pgvector ranks what survives.
+Driven by CLI flags for now; the parser fills the same object next.
+
+**#3 (hard constraints) — fixed.** `"co-op base builder" --platform linux
+--max-price 20 --multiplayer` returns Stellar Settlers, Necesse, Volcanoids and
+similar: every result Linux, every price under $20, all genuinely co-op.
+
+**#8 (child safety) — the tools now exist.** `--max-age 7` plus
+`--exclude-tag Violent --exclude-tag Nudity --exclude-tag Gore` can express the
+query that previously returned a first-person shooter and a game tagged
+`Nudity`. Note `required_age` alone is insufficient: only 1,321 of 138,964
+games carry a non-zero value, so the tag exclusions do most of the work.
+
+**#9 (social constraints) — partly.** `--multiplayer` maps onto
+`game_categories`, using the full co-op set rather than `Multi-player` alone
+because 744 of 22,127 co-op games lack that category. The
+beginner-adult-vs-child conflation is unaffected; that is a semantic limit, not
+a missing filter.
+
+**#7 (jargon) — partly.** `--tag Roguelike` reaches games that "map changes
+every run" could not. Turning the phrase into the tag is the parser's job.
+
+**Still open and unfixed by this step:** #1 negation in free text, #2 proper
+nouns, #4 titles outweighing tags, #5 reputation vs self-description, #6 player
+context, #10 "brutal" reading as gore.

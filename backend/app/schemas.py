@@ -5,8 +5,74 @@ defined once here rather than redeclared alongside the API.
 """
 
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+Platform = Literal["windows", "mac", "linux"]
+
+
+class ParsedQuery(BaseModel):
+    """A search request split into a vibe and hard constraints.
+
+    Filled by hand from CLI flags today and by a local chat model in the next
+    step. Same object either way, so the parser becomes another way to produce
+    one rather than a second implementation of filtering.
+
+    Prices are USD, not EUR as BUILD_PLAN.md assumed - the Kaggle source is
+    Steam's US storefront. max_required_age came out of eval/failures.md #8.
+    """
+
+    # The part that gets embedded. Everything else is a WHERE clause.
+    semantic_query: str
+
+    max_price_usd: float | None = None
+    min_price_usd: float | None = None
+
+    required_tags: list[str] = Field(default_factory=list)
+    excluded_tags: list[str] = Field(default_factory=list)
+
+    # ANDed: ["mac", "linux"] means runs on both, not either.
+    platforms: list[Platform] = Field(default_factory=list)
+
+    released_after: int | None = None  # year
+    multiplayer: bool | None = None
+    max_required_age: int | None = None
+
+    def has_filters(self) -> bool:
+        """True when anything beyond the semantic query is set."""
+        return any(
+            (
+                self.max_price_usd is not None,
+                self.min_price_usd is not None,
+                self.required_tags,
+                self.excluded_tags,
+                self.platforms,
+                self.released_after is not None,
+                self.multiplayer is not None,
+                self.max_required_age is not None,
+            )
+        )
+
+    def describe(self) -> list[str]:
+        """Human-readable filter list, for the CLI and later the UI chips."""
+        parts: list[str] = []
+        if self.min_price_usd is not None:
+            parts.append(f">= ${self.min_price_usd:g}")
+        if self.max_price_usd is not None:
+            parts.append(f"<= ${self.max_price_usd:g}")
+        parts.extend(self.platforms)
+        parts.extend(self.required_tags)
+        parts.extend(f"not {tag}" for tag in self.excluded_tags)
+        if self.released_after is not None:
+            parts.append(f"after {self.released_after}")
+        if self.multiplayer is True:
+            parts.append("multiplayer")
+        elif self.multiplayer is False:
+            parts.append("singleplayer")
+        if self.max_required_age is not None:
+            parts.append(f"age <= {self.max_required_age}")
+        return parts
 
 
 class SearchResult(BaseModel):
@@ -29,8 +95,16 @@ class SearchResult(BaseModel):
 
 
 class SearchResponse(BaseModel):
-    query: str
+    # Returned alongside the results so the caller can see what was actually
+    # applied. BUILD_PLAN.md's editable filter chips render this.
+    parsed: ParsedQuery
     results: list[SearchResult] = Field(default_factory=list)
+
+    # Tags that matched nothing in the real vocabulary. Reported rather than
+    # silently yielding zero rows - `Base Building` vs `Base-Building` returns
+    # nothing with no error, which is the failure the parser's fuzzy matching
+    # will exist to prevent.
+    unknown_tags: list[str] = Field(default_factory=list)
 
     requested: int
     # Fewer than requested means the WHERE clause starved the vector index of

@@ -9,7 +9,6 @@ from decimal import Decimal
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
-    ARRAY,
     Boolean,
     Computed,
     Date,
@@ -21,6 +20,7 @@ from sqlalchemy import (
     Text,
     text,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Must match the vector() dimension in the migration. nomic-embed-text emits
@@ -113,6 +113,11 @@ class Game(Base):
     # `tags @> ARRAY[...]` against a GIN index rather than a join and GROUP BY.
     # NOT NULL with an empty-array default: NULL would break exclusion filters,
     # since NOT (NULL && ARRAY['Violent']) is NULL rather than true.
+    #
+    # Must be the postgresql dialect ARRAY, not sqlalchemy.ARRAY: only the
+    # dialect type implements .contains() (@>) and .overlap() (&&). The base
+    # type raises NotImplementedError at runtime, and mypy does not catch it.
+    # Same DDL either way (text[]), so no migration is involved.
     tags: Mapped[list[str]] = mapped_column(
         ARRAY(Text), nullable=False, server_default=text("'{}'::text[]")
     )
@@ -155,6 +160,18 @@ class Game(Base):
         Index("ix_games_total_reviews", "total_reviews"),
         # Tag filtering: tags @> ARRAY[...] and NOT tags && ARRAY[...].
         Index("ix_games_tags_gin", "tags", postgresql_using="gin"),
+        # Declared so `alembic check` sees the models and the database agree.
+        # Created by migration 0003 and rebuilt by 0005 rather than here -
+        # models never create tables. Leaving it undeclared meant autogenerate
+        # would propose dropping it. vector_cosine_ops must match the <=>
+        # operator in app/search.py.
+        Index(
+            "ix_games_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+            postgresql_with={"m": 16, "ef_construction": 64},
+        ),
         # Partial index: the embed job asks "what is left?" repeatedly, and this
         # keeps that question cheap even as the unembedded set shrinks to zero.
         Index(
