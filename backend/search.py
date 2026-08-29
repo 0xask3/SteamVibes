@@ -12,8 +12,10 @@ parser arrives it fills the same ParsedQuery these flags build.
 """
 
 import argparse
+import logging
 import textwrap
 
+from app.query_parser import parse_query
 from app.schemas import ParsedQuery, SearchResponse, SearchResult
 from app.search import search
 
@@ -95,17 +97,35 @@ def build_parsed_query(args: argparse.Namespace) -> ParsedQuery:
     elif args.singleplayer:
         multiplayer = False
 
-    return ParsedQuery(
-        semantic_query=args.query,
-        max_price_usd=args.max_price,
-        min_price_usd=args.min_price,
-        required_tags=args.tag or [],
-        excluded_tags=args.exclude_tag or [],
-        platforms=args.platform or [],
-        released_after=args.after,
-        multiplayer=multiplayer,
-        max_required_age=args.max_age,
-    )
+    # --parse asks the model; without it the query is treated as pure vibe and
+    # only explicit flags filter. Keeping the unparsed path is what makes the
+    # parser's contribution measurable rather than assumed.
+    if args.parse:
+        base = parse_query(args.query, model=args.model)
+    else:
+        base = ParsedQuery(semantic_query=args.query)
+
+    # Explicit flags win over anything the model decided. This is BUILD_PLAN's
+    # editable filter chips in CLI form: the parser's choices are visible and
+    # correctable rather than silently applied.
+    if args.max_price is not None:
+        base.max_price_usd = args.max_price
+    if args.min_price is not None:
+        base.min_price_usd = args.min_price
+    if args.tag:
+        base.required_tags = args.tag
+    if args.exclude_tag:
+        base.excluded_tags = args.exclude_tag
+    if args.platform:
+        base.platforms = args.platform
+    if args.after is not None:
+        base.released_after = args.after
+    if multiplayer is not None:
+        base.multiplayer = multiplayer
+    if args.max_age is not None:
+        base.max_required_age = args.max_age
+
+    return base
 
 
 def main() -> None:
@@ -143,8 +163,20 @@ def main() -> None:
     group.add_argument("--multiplayer", action="store_true", help="Multiplayer only.")
     group.add_argument("--singleplayer", action="store_true", help="No multiplayer.")
 
+    parser.add_argument(
+        "--parse",
+        action="store_true",
+        help="Use the chat model to extract filters from the query.",
+    )
+    parser.add_argument(
+        "--model", help="Override CHAT_MODEL for --parse, e.g. qwen2.5:14b."
+    )
     parser.add_argument("--json", action="store_true", help="Emit raw JSON.")
     args = parser.parse_args()
+
+    # WARNING and above to stderr, so the parser fallback is visible rather
+    # than silent. CLAUDE.md: the fallback AND the log line.
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     response = search(
         build_parsed_query(args), limit=args.limit, threshold=args.threshold

@@ -74,9 +74,30 @@ Two categories, and I'll say which one we're in at the top of each session:
 - Tag strings must match exactly: the real tags are `Co-op` and `Base-Building`,
   not `Base Building`. A wrong string returns zero rows with no error, which is
   why the parser is grounded on the real vocabulary.
-- The query parser is grounded on the real tag vocabulary (top ~200 tags
-  passed into the prompt). Invented tags get fuzzy-matched, then dropped —
-  never returned as a filter that yields zero results.
+- The query parser is grounded on the real tag vocabulary — all 452 tags, not
+  BUILD_PLAN's "top ~200". They cost ~1,400 tokens, and passing every one
+  removes a whole failure class: a tag that exists but was never shown.
+  Invented tags get fuzzy-matched, then dropped — never returned as a filter
+  that yields zero results.
+- Field order in `ParsedQuery` is load-bearing, not cosmetic. Ollama's `format`
+  constrains generation, so fields are emitted in declaration order and an
+  earlier one cannot be revised. `semantic_query` must stay LAST: it is the
+  query with every extracted constraint removed, so it depends on all the
+  others. Declared first, both models returned the original sentence unstripped.
+- The parser prompt's layout is tuned and the two blocks compete. Whatever sits
+  nearest the query wins: vocabulary at the bottom and the scalar rules lose
+  price/platform/year; vocabulary at the top and tag extraction collapses.
+  Current layout — rules, worked example, then vocabulary last — passes both.
+  Never edit that prompt without re-running `eval/compare_parsers.py`; it reads
+  fine either way and fails silently.
+- `CHAT_NUM_CTX` must comfortably hold the vocabulary prompt (~1,800 tokens).
+  An overflow truncates silently from the end, dropping tags off the list —
+  the exact failure passing all 452 was meant to remove.
+- Chat models are thinking models now: send `think: false` or pay seconds of
+  latency per parse. It is `bool | None` and omitted when `None`, because
+  Ollama 400s on `think` for models that predate it. Ollama issue #14645 —
+  `format` silently ignored when thinking is disabled — is fixed as of 0.33.2,
+  verified by curl before the parser was trusted. Re-check after an upgrade.
 - In Git Bash, absolute paths passed to `docker compose exec` get rewritten by
   MSYS (`/dev/shm` becomes `C:/Program Files/Git/dev/shm`). Escape with a
   leading double slash: `//dev/shm`, or prefix `MSYS_NO_PATHCONV=1`.
@@ -98,8 +119,22 @@ Two categories, and I'll say which one we're in at the top of each session:
 
 ## Current state
 
-Weekend 1 COMPLETE. Weekend 2: schema and structured filtering done, parser
-next. Migrations 0001-0005.
+Weekend 1 COMPLETE. Weekend 2: schema, structured filtering and the query
+parser done; FastAPI and React next. Migrations 0001-0005.
+
+Parser: `app/query_parser.py` turns natural language into the same
+`ParsedQuery` the CLI flags build — one code path, not two. `app/llm.py` is the
+Ollama chat client (`/api/chat`, `format` = the Pydantic JSON schema,
+`temperature=0`, `think=false`). `CHAT_MODEL=qwen3.5:9b`, chosen against
+`qwen3.5:4b` on evidence: 4b is 0.14s faster but returns no filters at all on
+2 of 10 queries, one of them German. Warm parse ~0.73s. Failures never raise —
+any error degrades to `ParsedQuery(semantic_query=text)` with a WARNING, which
+is exactly the pre-parser behaviour.
+
+Two rounds of prompt iteration, all of it driven by
+`eval/compare_parsers.py`; round 1 disagreed on 10 of 10 queries at
+temperature 0, which is a prompt problem, not model variance. Fixes and the two
+still-open defects are `eval/failures.md` #12-17.
 
 Filters: `app/search.py` takes a `ParsedQuery` (`app/schemas.py`) and applies
 price, platform, tag, year, age and multiplayer in SQL before pgvector ranks
@@ -164,8 +199,8 @@ does not work" section.
    for "easy relaxing game". Try name-last or repeated tags. One f-string plus
    ~12 min re-embedding, and it earns a row in the Weekend 3 results table.
 
-Next: Weekend 2 — query parser (`ParsedQuery` from a local chat model, grounded
-on the real 452-tag vocabulary), FastAPI, React with editable filter chips.
-Also the deferred `games.tags text[]` + GIN migration.
+Next: Weekend 2 — FastAPI (`app/main.py`) and React with editable filter chips.
+`SearchResponse` already carries `parsed`, which is what the chips render, so
+the API is mostly wiring.
 
 (update this at the end of every session)

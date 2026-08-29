@@ -23,9 +23,13 @@ class ParsedQuery(BaseModel):
     Steam's US storefront. max_required_age came out of eval/failures.md #8.
     """
 
-    # The part that gets embedded. Everything else is a WHERE clause.
-    semantic_query: str
-
+    # FIELD ORDER IS LOAD-BEARING. This schema is handed to Ollama's `format`,
+    # which constrains generation, so the model emits fields in declaration
+    # order and cannot revise an earlier one. semantic_query is therefore last:
+    # it is the only field whose value depends on all the others, because it is
+    # the query with every extracted constraint removed. When it came first,
+    # both models returned the original sentence unchanged - they had not yet
+    # worked out what to strip. See eval/failures.md.
     max_price_usd: float | None = None
     min_price_usd: float | None = None
 
@@ -38,6 +42,9 @@ class ParsedQuery(BaseModel):
     released_after: int | None = None  # year
     multiplayer: bool | None = None
     max_required_age: int | None = None
+
+    # The part that gets embedded. Everything else is a WHERE clause.
+    semantic_query: str
 
     def has_filters(self) -> bool:
         """True when anything beyond the semantic query is set."""

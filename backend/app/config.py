@@ -33,6 +33,25 @@ class Settings(BaseSettings):
     # cheap. "-1" never unloads; "0" unloads immediately.
     ollama_keep_alive: str = "30m"
 
+    # Chat model for the query parser. A setting rather than a constant so
+    # models can be compared without touching code - see
+    # eval/compare_parsers.py.
+    chat_model: str = "qwen3.5:9b"
+
+    # Qwen3.5 is a hybrid reasoning model: it emits a thinking block before the
+    # answer unless told not to. The parser sits in the request path and the
+    # task is extraction, not reasoning, so thinking is latency we do not buy
+    # anything with. None omits the flag entirely, which is required for models
+    # that predate it - Ollama rejects `think` outright for qwen2.5.
+    chat_think: bool | None = False
+
+    # The parser's system prompt carries all 452 tags - ~1,400 tokens of
+    # vocabulary plus the rules. Ollama's default context is small enough that
+    # this is uncomfortably close to it, and an overflow truncates silently,
+    # dropping tags off the end of the list. That is the exact failure passing
+    # the full vocabulary was meant to remove, so the window is set explicitly.
+    chat_num_ctx: int = 8192
+
     # Games with total_reviews <= this are hidden from search results. A knob,
     # not a constant — Weekend 3 measures recall at several values.
     review_threshold: int = 10

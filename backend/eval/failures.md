@@ -300,3 +300,111 @@ every run" could not. Turning the phrase into the tag is the parser's job.
 **Still open and unfixed by this step:** #1 negation in free text, #2 proper
 nouns, #4 titles outweighing tags, #5 reputation vs self-description, #6 player
 context, #10 "brutal" reading as gore.
+
+---
+
+## Query parser results (2026-08-29)
+
+`qwen3.5:9b` vs `qwen3.5:4b` over the ten queries in `eval/compare_parsers.py`,
+three of them German. Ollama `format` with `ParsedQuery.model_json_schema()`,
+`temperature=0`, `think=false`. Two rounds of prompt iteration; each row below
+is a real defect the harness caught, not a hypothetical.
+
+Round 1 produced **10 disagreements out of 10 queries**. At temperature 0 that
+is not model variance — it means the prompt underconstrained the task.
+
+### 12. Schema field order is reasoning order
+
+**Got.** `semantic_query` returned as the *entire original sentence*, unstripped,
+on 4 of 10 queries. Filters were extracted correctly alongside it.
+
+**Why.** Ollama's `format` constrains generation, so fields are emitted in
+schema declaration order and an earlier field cannot be revised once written.
+`semantic_query` was declared first, so the model had to write the
+constraint-stripped query *before* extracting any constraints.
+
+**Fixed by.** Moving `semantic_query` last in `ParsedQuery`. It is the only
+field whose value depends on all the others. Comment in `app/schemas.py` marks
+the ordering load-bearing.
+
+### 13. Prompt layout is load-bearing, and the two blocks compete
+
+**Got.** With the ~1,400-token tag vocabulary at the *bottom*: tags extracted
+well, but price/platform/year ignored — the headline query lost both
+`max_price=20` and `platforms=["linux"]`. Moving the vocabulary to the *top*
+fixed the scalars and collapsed the tags: `"cozy farming game with fishing"`
+went from three tags to zero.
+
+**Why.** Whichever block sits nearest the query wins the model's attention.
+Recency is the strongest lever in the prompt, and it only points one way at a
+time.
+
+**Fixed by.** Vocabulary back at the bottom, *plus* rewriting the scalar rules
+so they hold on wording rather than position, *plus* removing a blanket "no
+filter is better than a wrong one" line that was suppressing tags. The
+anti-inference rule is now scoped to the five scalar fields only. Both
+extractions now pass together — but any future edit here needs
+`compare_parsers.py` re-run, not just a read.
+
+### 14. Mood read as player count
+
+**Got.** `multiplayer=false` invented on 6 of 20 parses — "something like dark
+souls", "cozy farming game", "entspanntes Spiel zum Abschalten". Nothing in
+those queries mentions playing alone.
+
+**Why.** Both models inferred solo play from mood words. A wrong `multiplayer`
+is worse than a missing one: it silently removes every co-op game.
+
+**Fixed by.** An explicit prompt rule naming "cozy", "relaxing", "entspannt"
+and "gemütlich" as saying nothing about player count. 6 occurrences to 0.
+
+### 15. Vague price words invented a number
+
+**Got.** "cheap relaxing puzzle games" produced `max_price_usd=20` on 9b and
+`max_price_usd=0` on 4b. The `0` is the dangerous one — it restricts to free
+games only, silently.
+
+**Fixed by.** A price now requires a NUMBER, or the word free/kostenlos.
+"cheap", "günstig", "budget" stay in `semantic_query` where the embedding can
+use them.
+
+### 16. `released_after` missed by 9b — OPEN
+
+**Query.** `free multiplayer shooter released after 2020`
+
+**Got.** 9b returns `max_price=0` and `multiplayer=true` but no
+`released_after`. 4b gets it, reproducibly, in all three runs.
+
+**Why.** Unknown. The rule is stated plainly and the field sits sixth of nine
+in schema order. This is the clearest single win 4b has over 9b.
+
+### 17. Co-op collapses into `multiplayer`, losing the tag — OPEN
+
+**Query.** `co-op base builder under 20 dollars that runs on linux`
+
+**Got.** `max_price=20`, `platforms=["linux"]`, `multiplayer=true` — but
+`required_tags` empty, on both models, despite the worked example in the prompt
+naming `["Co-op", "Base-Building"]` for this exact sentence.
+
+**Why.** Probably refusal to double-encode: once "co-op" became
+`multiplayer=true`, the model treats the `Co-op` tag as redundant, and leaves
+"base builder" for the embedding. Defensible, and pgvector does recover it —
+but `Base-Building` is an available hard filter going unused.
+
+### Model comparison
+
+| | qwen3.5:9b | qwen3.5:4b |
+|---|---|---|
+| "cheap relaxing puzzle, nothing scary" | `Puzzle Relaxing not Horror` | `(none)` |
+| "entspanntes Spiel zum Abschalten" | `Relaxing` | `(none)` |
+| `semantic_query` stripping | "base builder", "fun game" | keeps constraint words |
+| "released after 2020" | misses (#16) | gets it |
+| warm average | 0.73s | 0.59s |
+
+**Chosen: `qwen3.5:9b`.** 4b returns no filters at all on two of ten queries,
+one of them German. 9b's failures are single omissions. The 0.14s sits in front
+of a ~417ms search, so end to end it is ~1.1s vs ~1.0s — not worth two dead
+queries.
+
+Selection was on evidence, not size: 4b beat 9b on #16 and on `Souls-like`, and
+was a live contender until the two `(none)` rows decided it.
