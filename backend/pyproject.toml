@@ -4,8 +4,7 @@ version = "0.1.0"
 description = "Semantic search over ~120k Steam games"
 requires-python = ">=3.14"
 
-# Weekend 1 only: load the data, embed it, search it from a terminal.
-# FastAPI arrives in Weekend 2, in its own commit.
+# Load the data, embed it, search it from a terminal or over HTTP.
 dependencies = [
     "sqlalchemy>=2.0.36",
     "psycopg[binary]>=3.2",
@@ -15,6 +14,8 @@ dependencies = [
     "pydantic-settings>=2.7",
     "httpx>=0.28",
     "tqdm>=4.67",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
 ]
 
 [dependency-groups]

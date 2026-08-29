@@ -4,10 +4,11 @@ Weekend 2's POST /api/search returns SearchResponse directly, so these are
 defined once here rather than redeclared alongside the API.
 """
 
+from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 Platform = Literal["windows", "mac", "linux"]
 
@@ -123,6 +124,71 @@ class SearchResponse(BaseModel):
     embed_ms: float
     query_ms: float
 
+    # None means no LLM call happened - the caller supplied an already-parsed
+    # query, which is what an edited filter chip does. Set by the API endpoint
+    # rather than by search(), which knows nothing about parsing.
+    parse_ms: float | None = None
+
+    # computed_field, not a bare @property: a plain property is invisible to
+    # model_dump_json(), so the browser would never receive this and the
+    # "filters starved the index" warning would silently disappear at the API
+    # boundary. Still an ordinary property from Python, so search.py's CLI
+    # warning is unaffected.
+    @computed_field  # type: ignore[prop-decorator]  # pydantic supports this
     @property
     def under_delivered(self) -> bool:
         return self.returned < self.requested
+
+
+class SearchRequest(BaseModel):
+    """POST /api/search body.
+
+    `parsed` is the editable-chip path: when the caller sends one back, its
+    filters are used verbatim and no chat model runs. Re-parsing `query`
+    instead would re-derive whichever chip the user just removed, and charge
+    ~0.7s to do it.
+    """
+
+    query: str
+    parsed: ParsedQuery | None = None
+
+    limit: int = Field(default=10, ge=1, le=50)
+    threshold: int | None = None
+
+
+class GameDetail(BaseModel):
+    """GET /api/game/{app_id}. Everything a click-through page needs.
+
+    Wider than SearchResult on purpose: that one is repeated 10x in a list and
+    stays lean, this one is fetched once.
+    """
+
+    app_id: int
+    name: str
+    short_description: str | None = None
+    detailed_description: str | None = None
+
+    release_date: date | None = None
+    developers: list[str] = Field(default_factory=list)
+    publishers: list[str] = Field(default_factory=list)
+
+    # list_price_usd, never price_usd - the snapshot caught a sale. See
+    # CLAUDE.md.
+    list_price_usd: Decimal | None = None
+    discount_pct: int = 0
+    is_free: bool = False
+
+    total_reviews: int = 0
+    positive_reviews: int = 0
+    positive_ratio: float | None = None
+    metacritic_score: int | None = None
+    estimated_owners: str | None = None
+
+    required_age: int = 0
+    platforms: list[str] = Field(default_factory=list)
+    header_image: str | None = None
+
+    # Full list here, not the top 5 a SearchResult carries.
+    tags: list[str] = Field(default_factory=list)
+    genres: list[str] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)

@@ -113,14 +113,34 @@ Two categories, and I'll say which one we're in at the top of each session:
   `sqlalchemy.ARRAY`. Only the dialect type implements `.contains()` (`@>`) and
   `.overlap()` (`&&`); the base type raises at runtime and mypy does not catch
   it. Same DDL, so switching needs no migration.
+- FastAPI endpoints are `def`, never `async def`. `search()` and `parse_query()`
+  are synchronous and block on network I/O (Ollama, then Postgres); declared
+  `async` they run on the event loop and serialise every request behind the
+  slowest one. As plain `def` they go to FastAPI's threadpool, which is safe
+  here because `session_scope()` builds a fresh Session per call and
+  `httpx.Client` is thread-safe. Verified: `/api/health` answers in 30ms while
+  a 1.3s parse is in flight.
+- A bare `@property` does not serialise. Anything that must cross the API
+  boundary needs `@computed_field` above it — `under_delivered` was invisible
+  in JSON while working fine from Python, which would have silently dropped
+  the "filters starved the index" warning at exactly the point a user sees it.
 - Commit per feature, not per session.
 - When something breaks, three lines in `NOTES.md`: what broke, what I
   tried, what fixed it.
 
 ## Current state
 
-Weekend 1 COMPLETE. Weekend 2: schema, structured filtering and the query
-parser done; FastAPI and React next. Migrations 0001-0005.
+Weekend 1 COMPLETE. Weekend 2: schema, structured filtering, the query parser
+and the API done; React next. Migrations 0001-0005.
+
+API: `app/main.py` serves `POST /api/search`, `GET /api/game/{app_id}` and
+`GET /api/health` over the same `search()` the CLI uses — no second
+implementation. `SearchRequest` carries an optional `parsed`: when present its
+filters are used verbatim and no chat model runs, which is the editable-chip
+path. Measured 1.347s (parse 1247ms of it) versus 0.095s when the chips supply
+the filters, so re-parsing on a chip edit would be both wrong — it re-derives
+the chip just removed — and 14x slower. `app/games.py` holds the detail
+lookup, kept out of `app/search.py` so the ranking path stays undiluted.
 
 Parser: `app/query_parser.py` turns natural language into the same
 `ParsedQuery` the CLI flags build — one code path, not two. `app/llm.py` is the
@@ -142,7 +162,9 @@ the survivors. Driven by CLI flags today; the parser fills the same object, so
 there is one code path, not two. `--platform linux --max-price 20
 --multiplayer` filters 130,651 rows to 1,867 and returns in ~417ms.
 `multiplayer` reads `game_categories` using the full co-op set, not
-`Multi-player` alone — 744 of 22,127 co-op games lack that category.
+`Multi-player` alone — 744 of 22,127 co-op games lack that category. It
+excludes `Remote Play Together`, which is a streaming feature rather than a
+mode: 637 Single-player-only games qualified for it. See failures.md #18.
 Unknown tags are reported rather than silently returning nothing.
 
 `OLLAMA_KEEP_ALIVE=30m`: Ollama's 5m default evicts the model, and an idle CLI
@@ -199,8 +221,8 @@ does not work" section.
    for "easy relaxing game". Try name-last or repeated tags. One f-string plus
    ~12 min re-embedding, and it earns a row in the Weekend 3 results table.
 
-Next: Weekend 2 — FastAPI (`app/main.py`) and React with editable filter chips.
-`SearchResponse` already carries `parsed`, which is what the chips render, so
-the API is mostly wiring.
+Next: Weekend 2 — React with editable filter chips, against the API above.
+`SearchResponse` carries `parsed`; posting it back with a filter removed is the
+chip interaction, and it costs no LLM call.
 
 (update this at the end of every session)
