@@ -36,11 +36,19 @@ uv run alembic upgrade head
 No-op if the schema hasn't changed. Cheaper than debugging a column that
 doesn't exist yet.
 
-## 4. Reload
+## 4. Drop the HNSW index, then reload
 
 ```bash
+uv run alembic downgrade 0004     # drops ix_games_embedding_hnsw
 uv run python -m ingest.load_games --reload
 ```
+
+**Drop the index first.** It is 510MB over 130,651 vectors, and a `--reload`
+updates every one of the 138,964 rows. Each update needs a new entry in every
+index on the table, and HNSW insertion is deliberately expensive — the same
+reason it is built after the embed job rather than before. With the index in
+place a reload runs for many minutes; without it, about three. Step 6 rebuilds
+it.
 
 **`--reload` is required.** Without it the loader skips every app_id already
 present and only picks up genuinely new games — so changed prices, review
@@ -70,14 +78,21 @@ WHERE embed_text IS NOT NULL AND embedding IS NULL;
 
 New games plus any whose text changed.
 
-## 6. Re-embed
+## 6. Re-embed, then rebuild the vector index
 
 ```bash
 uv run python -m ingest.embed_all
 ```
 
-Only touches rows where `embedding IS NULL`, so it costs proportional to what
-actually changed, not the full 35 minutes. Interruptible — re-run to continue.
+Then put HNSW back, now that all the heavy writing is done:
+
+```bash
+uv run alembic upgrade head
+```
+
+The embed job only touches rows where `embedding IS NULL`, so it costs
+proportional to what actually changed, not the full 12 minutes. Interruptible
+— re-run to continue.
 
 ## 7. Verify
 
@@ -114,6 +129,7 @@ VACUUM ANALYZE games;
 After changing a large fraction of the table, Postgres' row estimates are
 stale, and it may pick a bad plan for search queries.
 
-The HNSW index does **not** need rebuilding — it maintains itself on insert and
-update. Only a change to the embedding model (and therefore the vector
-dimension) requires a new index, and that comes with its own migration.
+The HNSW index is rebuilt in step 6, not here. It does maintain itself on
+insert and update, but that maintenance is what makes a full reload slow, which
+is why step 4 drops it. A change of embedding model, and therefore of vector
+dimension, needs a new index definition and its own migration.

@@ -123,6 +123,7 @@ def to_game_row(app_id: int, rec: dict[str, Any]) -> dict[str, Any]:
         "windows": bool(rec.get("windows")),
         "mac": bool(rec.get("mac")),
         "linux": bool(rec.get("linux")),
+        "required_age": rec.get("required_age") or 0,
         "positive_reviews": rec.get("positive") or 0,
         "negative_reviews": rec.get("negative") or 0,
         "metacritic_score": rec.get("metacritic_score") or None,
@@ -130,6 +131,9 @@ def to_game_row(app_id: int, rec: dict[str, Any]) -> dict[str, Any]:
         "header_image": rec.get("header_image") or None,
         "developers": rec.get("developers") or None,
         "publishers": rec.get("publishers") or None,
+        # Denormalised alongside the game_tags rows, from the same dict, so the
+        # two cannot drift. Most-voted first.
+        "tags": top_tags(tags, len(tags)),
         "embed_text": build_embed_text(name, short_description, tags),
     }
 

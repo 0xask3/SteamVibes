@@ -101,6 +101,21 @@ class Game(Base):
         Computed("positive_reviews + negative_reviews", persisted=True),
     )
 
+    # Steam sets this only where legally required, so 137,643 of 138,964 rows
+    # are 0. Necessary for age filtering but not sufficient - pair it with
+    # excluding mature tags.
+    required_age: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+
+    # Denormalised from game_tags, most-voted first. game_tags stays the source
+    # of truth because it carries votes; this exists so tag filtering is
+    # `tags @> ARRAY[...]` against a GIN index rather than a join and GROUP BY.
+    # NOT NULL with an empty-array default: NULL would break exclusion filters,
+    # since NOT (NULL && ARRAY['Violent']) is NULL rather than true.
+    tags: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, server_default=text("'{}'::text[]")
+    )
     metacritic_score: Mapped[int | None] = mapped_column(Integer)
     estimated_owners: Mapped[str | None] = mapped_column(Text)
     header_image: Mapped[str | None] = mapped_column(Text)
@@ -122,7 +137,7 @@ class Game(Base):
     embedding_model: Mapped[str | None] = mapped_column(Text)
     embedded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    tags: Mapped[list["GameTag"]] = relationship(
+    tag_rows: Mapped[list["GameTag"]] = relationship(
         back_populates="game", cascade="all, delete-orphan", passive_deletes=True
     )
     genres: Mapped[list["GameGenre"]] = relationship(
@@ -138,6 +153,8 @@ class Game(Base):
         Index("ix_games_list_price_usd", "list_price_usd"),
         Index("ix_games_release_date", "release_date"),
         Index("ix_games_total_reviews", "total_reviews"),
+        # Tag filtering: tags @> ARRAY[...] and NOT tags && ARRAY[...].
+        Index("ix_games_tags_gin", "tags", postgresql_using="gin"),
         # Partial index: the embed job asks "what is left?" repeatedly, and this
         # keeps that question cheap even as the unembedded set shrinks to zero.
         Index(
@@ -162,7 +179,7 @@ class GameTag(Base):
     tag: Mapped[str] = mapped_column(Text, primary_key=True)
     votes: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
 
-    game: Mapped[Game] = relationship(back_populates="tags")
+    game: Mapped[Game] = relationship(back_populates="tag_rows")
 
     __table_args__ = (
         Index("ix_game_tags_tag", "tag"),
