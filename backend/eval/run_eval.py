@@ -31,6 +31,7 @@ from typing import Any
 
 import yaml
 
+from app.config import settings
 from app.query_parser import parse_query
 from app.schemas import ParsedQuery
 from app.search import search
@@ -94,7 +95,11 @@ def main() -> None:
     misses: list[tuple[Case, set[int]]] = []
 
     label = "parsed" if args.parse else "semantic only"
-    print(f"\n{len(cases)} queries | recall@{args.limit} | {label}\n")
+    threshold = settings.review_threshold if args.threshold is None else args.threshold
+    print(f"\n{len(cases)} queries | recall@{args.limit} | {label}")
+    # Self-labelling: these two decide the numbers below, and a results table
+    # pasted into NOTES.md without them is not reproducible.
+    print(f"model: {settings.embed_model}  |  review threshold: {threshold:,}\n")
     print(f"{'':4}{'query':<52}{'lang':<6}{'recall':>7}")
     print("-" * 70)
 

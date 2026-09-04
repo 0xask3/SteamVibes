@@ -26,7 +26,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 # Must match the vector() dimension in the migration. nomic-embed-text emits
 # 768. Weekend 3's bge-m3 emits 1024 — changing this is a schema change, so it
 # travels with a migration, never alone.
-EMBEDDING_DIM = 768
+# Must match the vector(N) in the latest migration that touches games.embedding
+# (0006). A constant, not a setting: it is a property of the database, and any
+# change to it is a table rewrite plus a full re-embed. Every 1024-dim model
+# swaps freely; a different width does not.
+EMBEDDING_DIM = 1024
 
 
 class Base(DeclarativeBase):

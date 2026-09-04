@@ -5,20 +5,37 @@ question the database answers directly (and cheaply, via ix_games_unembedded).
 Interrupt it and re-run; it continues where it stopped.
 
 Throughput on an RTX 4080 SUPER is flat at ~172-183 embeddings/sec for every
-batch size from 8 to 128, so anything in that range performs the same: the GPU
-is the bottleneck, not the HTTP round trip. 256 is rejected by Ollama with a
-400. Re-run ingest/bench_embed.py after changing models.
+batch size from 8 to 128 with nomic-embed-text, so anything in that range
+performs the same: the GPU is the bottleneck, not the HTTP round trip. 256 is
+rejected by Ollama with a 400.
+
+Measured rates over the whole corpus (130,651 rows), finished runs only:
+
+    nomic-embed-text          ~183/sec   ~12 min
+    bge-m3                     98.0/sec    22:13
+    snowflake-arctic-embed2    97.7/sec    22:16
+    qwen3-embedding:0.6b       82.3/sec    26:28
+
+Read these off a finished run, never off a sample. This docstring carried
+~51/sec for bge-m3 for a while, taken from an early tqdm reading, and it made
+the model look twice as expensive as it is; a 9-second watch window separately
+put qwen3 at ~128/sec, wrong the other way. Both errors have the same cause -
+at the start the model is still loading and the running average has almost no
+history to dilute it.
+
+Changing EMBED_MODEL needs --reload, and needs the HNSW index dropped first.
+Both are enforced below rather than left to memory.
 """
 
 import argparse
 from datetime import UTC, datetime
 
-from sqlalchemy import distinct, func, select, update
+from sqlalchemy import distinct, func, select, text, update
 from tqdm import tqdm
 
 from app.config import settings
 from app.db import session_scope
-from app.embedding import embed_texts
+from app.embedding import document_prefix, embed_texts
 from app.models import EMBEDDING_DIM, Game
 
 BATCH_SIZE = 128
@@ -44,8 +61,8 @@ def check_model_consistency(allow_mixed: bool) -> None:
 
     Distances between vectors from different models are meaningless, and
     nothing downstream would report an error — search would just quietly get
-    worse. Weekend 3's bge-m3 swap re-embeds everything, so this should only
-    ever fire on a mistake.
+    worse. Weekend 3's model comparison re-embeds everything between runs
+    (--reload), so this should only ever fire on a mistake.
     """
     with session_scope() as session:
         # The isnot(None) filters in SQL; the comprehension narrows the type.
@@ -68,6 +85,57 @@ def check_model_consistency(allow_mixed: bool) -> None:
             "re-embed everything, or pass --allow-mixed if you know why you "
             "want this."
         )
+
+
+def check_hnsw_absent() -> None:
+    """Refuse to bulk-write while the HNSW index exists.
+
+    CLAUDE.md states the rule and 0004/0006 both follow it, but the cost of
+    forgetting is silent: the job still works, it just takes many minutes
+    instead of seconds, because every row written needs a new entry in a
+    ~510MB graph. Cheaper to check than to notice.
+    """
+    with session_scope() as session:
+        present = session.scalar(
+            text(
+                "SELECT 1 FROM pg_indexes "
+                "WHERE indexname = 'ix_games_embedding_hnsw'"
+            )
+        )
+    if present:
+        raise SystemExit(
+            "ix_games_embedding_hnsw exists. Writing 130k vectors with it in "
+            "place rebuilds the graph row by row.\n"
+            "Drop it first:  uv run alembic downgrade 0006\n"
+            "Then re-embed, and rebuild with:  uv run alembic upgrade head"
+        )
+
+
+def clear_vectors() -> int:
+    """Discard every stored vector so the whole corpus re-embeds.
+
+    The work queue is `embedding IS NULL`, so without this a model change
+    embeds nothing at all - every row already has a vector, just one from the
+    wrong model. Named --reload to match load_games.
+    """
+    with session_scope() as session:
+        # Counted separately rather than read off the UPDATE: Session.execute()
+        # is typed as Result, which has no rowcount, and a cast to CursorResult
+        # buys nothing over one cheap count.
+        cleared = (
+            session.scalar(
+                select(func.count())
+                .select_from(Game)
+                .where(Game.embedding.isnot(None))
+            )
+            or 0
+        )
+        session.execute(
+            update(Game)
+            .where(Game.embedding.isnot(None))
+            .values(embedding=None, embedding_model=None, embedded_at=None)
+        )
+        return cleared
 
 
 def write_vectors(rows: list[dict[str, object]]) -> None:
@@ -103,7 +171,19 @@ def main() -> None:
         action="store_true",
         help="Permit vectors from a different model than those already stored.",
     )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Discard every existing vector first. Required when changing "
+        "EMBED_MODEL — without it there is nothing to embed.",
+    )
     args = parser.parse_args()
+
+    check_hnsw_absent()
+
+    if args.reload:
+        cleared = clear_vectors()
+        print(f"cleared {cleared:,} existing vectors\n")
 
     check_model_consistency(args.allow_mixed)
 
@@ -117,6 +197,9 @@ def main() -> None:
     print(f"model:      {settings.embed_model} ({EMBEDDING_DIM} dims)")
     print(f"endpoint:   {settings.ollama_base_url}")
     print(f"batch size: {args.batch_size}")
+    # Part of what every stored vector means, so it belongs in the run's output:
+    # reading it back later is the only way to know what was actually embedded.
+    print(f"doc prefix: {document_prefix()!r}")
     print(f"pending:    {pending:,}\n")
 
     done = 0

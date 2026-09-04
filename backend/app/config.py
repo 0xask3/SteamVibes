@@ -24,8 +24,12 @@ class Settings(BaseSettings):
     database_url: str
 
     ollama_base_url: str = "http://127.0.0.1:11434"
+
+    # The embedding model. Changing this changes what every stored vector means,
+    # so it needs `embed_all --reload`, not just a restart - and the query/
+    # document prefixes move with it (app/embedding.py). The vector width is NOT
+    # a setting: it is EMBEDDING_DIM in app/models.py, fixed by the migration.
     embed_model: str = "nomic-embed-text"
-    embed_dim: int = 768
 
     # How long Ollama keeps the model in VRAM after a request. Its default is
     # 5m, after which the next query pays an ~18s cold load - which dwarfs the

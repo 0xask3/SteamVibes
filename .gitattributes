@@ -1,0 +1,4 @@
+# core.autocrlf=true would rewrite shell scripts to CRLF on checkout, and bash
+# then fails on the shebang with a carriage-return in the command name. Keep
+# them LF regardless of platform.
+*.sh text eol=lf
