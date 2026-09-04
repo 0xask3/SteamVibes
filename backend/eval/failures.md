@@ -665,3 +665,119 @@ for. None of the three alone was enough.
 "like elden ring, not including itself" now drops ELDEN RING NIGHTREIGN too.
 Defensible — someone asking for games *like* Elden Ring wants different games —
 but it is a judgement call, not a derivation.
+
+### 24. The corpus outranks itself: no quality term in ranking (2026-09-04)
+
+The baseline was 6.1% recall@10 (9.2% EN, 0.0% DE) on `nomic-embed-text`, and
+DE at zero made this look like a German problem. It was not: the German queries
+are near-parallel to the English ones, so DE's ceiling *is* EN's 9.2%. Both
+columns bad pointed at the model.
+
+Replacing the model barely moved it. `snowflake-arctic-embed2` — MTEB Retrieval
+55.6, CLEF 54.1, top of the indexable candidates — gave 8.3% overall: DE
+unstuck (0.0% -> 10.0%) but **EN down**, 9.2% -> 7.5%.
+
+The score hid what the results made obvious. Top 10 for `city builder`:
+
+    1. City Builder                                   0.577
+    2. Megacity Builder                               0.542
+    3. 20 Minute Metropolis - The Action City Builder 0.518
+    4. Constructor Plus                               0.511
+    5. City Block Builder                             0.510
+    6. Square City Builder                            0.509
+    7. Epic City Builder 4                            0.507
+    8. Cities: Skylines II  (73,524 reviews)          0.502
+
+Every game whose *name* restates the query beats the canonical answer. Nothing
+is wrong with the retrieval — those are all genuinely city builders. Cosine has
+no notion of prominence, and in a corpus that is overwhelmingly shovelware, an
+asset flip named literally "City Builder" wins the lexical match every time.
+The same shape explains `deckbuilding roguelike` and `metroidvania with tight
+combat` missing their obvious answers.
+
+Sweeping `REVIEW_THRESHOLD` confirms it (arctic-embed2, exact scan, no HNSW):
+
+| threshold | corpus | EN | DE | overall |
+| --- | --- | --- | --- | --- |
+| 10 | 55,120 | 7.5% | 10.0% | 8.3% |
+| 100 | 22,700 | 19.2% | 15.0% | 17.8% |
+| 1,000 | 7,212 | 26.7% | 25.0% | 26.1% |
+| 10,000 | 1,702 | 63.3% | 45.0% | **57.2%** |
+| 50,000 | 470 | 45.8% | 50.0% | 47.2% |
+
+7x, from a config value. The peak is not an artifact of the ground truth being
+famous games — that would climb monotonically as the corpus shrank. It *falls*
+at 50,000, where the filter starts eating expected results (Coffee Talk,
+A Short Hike, Monster Train).
+
+**Not adopting 10,000.** It buys 57% by deleting 128,949 of 130,651 games,
+which is search over the Steam top 1,700. The long tail is the product — see
+the `REVIEW_THRESHOLD=10` convention in CLAUDE.md, chosen deliberately because
+the 11-50 review band is 24,762 real indie games.
+
+**What this actually says.** #22 already stumbled on the fix without naming it:
+the FPS query was rescued partly by `wants_popular()` applying a review floor,
+and that only fires when the user types "popular". Ranking needs a *continuous*
+quality term always — blend review count or positive ratio into the score —
+rather than a cliff the user has to ask for. That is a search-ranking change,
+so it goes through plan mode (CLAUDE.md review discipline, category 2), and a
+silently wrong ORDER BY here would produce plausible results forever.
+
+**Corollary for the model comparison.** Comparing embedding models at
+`REVIEW_THRESHOLD=10` mostly measures which one is best at matching shovelware
+titles. Compare them at a threshold where the signal is visible, and report the
+curve rather than one number.
+
+### 25. Three models, and the ranking inverts at the threshold (2026-09-04)
+
+**The claim under test.** #24 ended with a corollary: comparing embedding models
+at `REVIEW_THRESHOLD=10` "mostly measures which one is best at matching
+shovelware titles," so compare them higher up. Running all three across the
+whole curve shows that is half right — and the wrong half matters.
+
+recall@10, exact scan (HNSW dropped, so this is ground truth, not index recall),
+per-query average, 30 labelled queries:
+
+| threshold | corpus | arctic-embed2 | bge-m3 | qwen3:0.6b |
+| --- | --- | --- | --- | --- |
+| 10 | 55,120 | 8.3% | 10.0% | **18.3%** |
+| 100 | 22,700 | 17.8% | 10.0% | **22.8%** |
+| 1,000 | 7,212 | 26.1% | 22.8% | **26.7%** |
+| 10,000 | 1,702 | **57.2%** | 49.4% | 38.3% |
+| 50,000 | 470 | **47.2%** | 44.4% | 38.9% |
+
+**The models swap places.** There is a crossover between 1,000 and 10,000:
+below it qwen3 leads by 10 points, above it arctic leads by 19. Neither model
+is "better." One is more robust to a corpus full of self-describing asset flips,
+the other retrieves better once they are gone. #24's corollary assumed the low
+threshold measured *noise*; it measures a real and different property, and it
+happens to be the property the shipped configuration depends on.
+
+**Consequence for the eval.** A single-number model comparison at one threshold
+would have picked either model depending on which threshold was chosen, with no
+warning that the other choice existed. Report the curve.
+
+**Leaderboards did not predict any of it.** bge-m3 leads MIRACL by 13 points
+(69.2 vs 55.8) and came last or joint-last at four of five thresholds.
+arctic-embed2 leads MTEB Retrieval (55.6 vs 48.8) and loses at the threshold in
+use. CLAUDE.md named bge-m3 as the Weekend 3 target on exactly that evidence.
+The plan predicted the failure mode — MIRACL is monolingual DE→DE, this is a
+German query against English documents — and this is the measurement confirming
+it. Third falsified hypothesis in this file, after #19 and #20.
+
+**Shipped qwen3**, because `REVIEW_THRESHOLD=10` is the configuration that
+ships. This is provisional: the popularity term #24 asks for moves the effective
+regime toward the clean-corpus end where arctic wins, so the model choice must
+be re-measured after that lands rather than inherited. One `--reload` and one
+sweep, ~30 min.
+
+**Method note, from getting it wrong the first time.** Pass 1 was run piecemeal,
+with one embed job interrupted and resumed, and bge-m3's pre-eval check used
+`min(embedding_model)` — which returns `bge-m3` whether or not arctic vectors
+remain in the column, so it cannot detect the one failure
+`check_model_consistency()` exists to prevent. Pass 2 re-ran all three from
+`--reload` with `count(DISTINCT embedding_model)` plus a zero-vector check
+before every eval. All thirty numbers reproduced exactly, which also confirms
+the `embedding IS NULL` work queue makes an interrupted run indistinguishable
+from a clean one. The verification was genuinely unsound; the results were not.
+Both facts are worth keeping — a check that cannot fail is not a check.

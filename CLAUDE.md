@@ -67,10 +67,13 @@ Two categories, and I'll say which one we're in at the top of each session:
   `price_usd` is a sale price. `list_price_usd` is generated from it and
   `discount_pct`, and is a cent low by construction. See NOTES.md 2026-08-26.
 - The HNSW index on `games.embedding` is built *after* any bulk write, never
-  before — UPDATE as well as INSERT. It is 510MB over 130,651 vectors, and a
+  before — UPDATE as well as INSERT. It is 1020MB over 130,651 vectors, and a
   full-table UPDATE forces a new index entry per row, so a backfill or a
   `--reload` with the index present takes many minutes instead of seconds.
-  `alembic downgrade 0004` drops it, `upgrade head` rebuilds it.
+  `alembic downgrade 0006` drops it, `upgrade head` rebuilds it.
+  Size is a step function of dimension, not a ratio: at 1024 dims an element is
+  ~4.4KB, so only one fits an 8KB page and the index doubled rather than growing
+  33% (measured 1.000 pages per element). See NOTES.md 2026-09-04.
 - Tag strings must match exactly: the real tags are `Co-op` and `Base-Building`,
   not `Base Building`. A wrong string returns zero rows with no error, which is
   why the parser is grounded on the real vocabulary.
@@ -111,7 +114,7 @@ Two categories, and I'll say which one we're in at the top of each session:
 - `uv run alembic check` belongs beside mypy and ruff. It is the only one of
   the three that compares the code against the real database. It caught that
   `ix_games_embedding_hnsw` existed in Postgres but not in `models.py`, which
-  meant the next `--autogenerate` would have proposed dropping a 510MB index.
+  meant the next `--autogenerate` would have proposed dropping a 1GB index.
 - Array columns use `sqlalchemy.dialects.postgresql.ARRAY`, never
   `sqlalchemy.ARRAY`. Only the dialect type implements `.contains()` (`@>`) and
   `.overlap()` (`&&`); the base type raises at runtime and mypy does not catch
@@ -158,8 +161,8 @@ Two categories, and I'll say which one we're in at the top of each session:
 
 ## Current state
 
-Weekend 1 COMPLETE. Weekend 2: schema, structured filtering, the query parser
-and the API done; React next. Migrations 0001-0005.
+Weekend 1 COMPLETE. Weekend 2 COMPLETE. Weekend 3: 1024-dim re-embed and the
+three-model comparison done. Migrations 0001-0007.
 
 API: `app/main.py` serves `POST /api/search`, `GET /api/game/{app_id}` and
 `GET /api/health` over the same `search()` the CLI uses — no second
@@ -199,8 +202,10 @@ Unknown tags are reported rather than silently returning nothing.
 then spends ~18s reloading it to do ~20ms of work. See NOTES.md 2026-08-29.
 
 Environment: Python 3.14.7 via uv; Ollama native on the host serving
-`nomic-embed-text` at ~183 embeddings/sec at batch 64; Postgres 16.15 + pgvector
-0.8.6 in Docker (`docker compose up -d db`).
+`qwen3-embedding:0.6b` at ~82 embeddings/sec at batch 128; Postgres 16.15 +
+pgvector 0.8.6 in Docker (`docker compose up -d db`). Rate is per model and
+varies 2x — see the table in `ingest/embed_all.py`, and read it off a finished
+run, never a sample.
 
 Data: `data/games.json` — 138,964 games. Use the JSON, not the CSV: the CSV is
 missing 13,109 games, has a 39-vs-40 column header offset, drops tag vote
@@ -209,18 +214,20 @@ counts, and has no `short_description` column at all.
 Built: `app/config.py`, `app/db.py`, `app/models.py`, and migration `0001`
 (games, game_tags, game_genres, game_categories), plus `0002` adding
 `discount_pct` and generated `list_price_usd`. Verified: upgrade, downgrade
-to base, upgrade again; `vector(768)` and the generated `total_reviews` column
-confirmed in `\d games`; a two-row cosine ranking returns the sane order;
-`ON DELETE CASCADE` confirmed. mypy and ruff clean.
+to base, upgrade again; `vector(768)` (widened to 1024 by `0006`) and the
+generated `total_reviews` column confirmed in `\d games`; a two-row cosine
+ranking returns the sane order; `ON DELETE CASCADE` confirmed. mypy and ruff
+clean.
 
 Loaded: all four tables populated in 2.9 min — 138,964 games, 1,180,522 tags,
 611,783 categories, 376,325 genres; 130,651 rows carry `embed_text`. Verified
 idempotent (re-run skips) and `--reload` upserts without duplicating. Source
 has 1,320 duplicate category entries, deduped at load.
 
-Embedded: all 130,651 rows carry a `nomic-embed-text` vector, at ~183/sec.
-Migration `0003` built the HNSW index (`vector_cosine_ops`, m=16,
-ef_construction=64) after embedding. Verified by query plan: `Index Scan using
+Embedded: all 130,651 rows carry a `qwen3-embedding:0.6b` vector at 1024 dims,
+at ~82/sec. Migration `0003` built the HNSW index (`vector_cosine_ops`, m=16,
+ef_construction=64) after embedding; `0006` widened the column and dropped the
+index, `0007` rebuilds it at 1024. Verified by query plan: `Index Scan using
 ix_games_embedding_hnsw`, 3.4ms for a top-10 over 130,651 vectors. The db
 service needs `shm_size: 4gb` or the parallel build fails — see NOTES.md.
 
@@ -254,10 +261,18 @@ does not work" section.
 
 Weekend 2 COMPLETE: parser, API and React with editable filter chips all done.
 
-Next: Weekend 3 — German, evaluation, packaging. Two things worth carrying:
-`bge-m3` re-embedding should fold in the nomic `search_document:`/
-`search_query:` prefixes (failures.md #19 — principled, but not worth a
-re-embed of their own), and trigram title matching for franchise names with
+Weekend 3 in progress. The embedding model is `qwen3-embedding:0.6b`, picked by
+measurement over `snowflake-arctic-embed2` and `bge-m3` — **not** bge-m3, which
+this file used to name as the target on the strength of its MIRACL score and
+which came last or joint-last at four of five review thresholds. Query/document
+prefixes are keyed on the model name in `app/embedding.py`, which also lands the
+nomic prefixes failures.md #19 wanted.
+
+The choice is threshold-dependent and provisional: qwen3 wins below ~1,000
+reviews, arctic wins above it by 19 points. Re-measure the model after ranking
+gains a popularity term (failures.md #24, #25) rather than inheriting it.
+
+Still worth carrying: trigram title matching for franchise names with
 ™/edition suffixes (failures.md #21).
 `SearchResponse` carries `parsed`; posting it back with a filter removed is the
 chip interaction, and it costs no LLM call.
