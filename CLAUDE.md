@@ -103,6 +103,9 @@ Two categories, and I'll say which one we're in at the top of each session:
   leading double slash: `//dev/shm`, or prefix `MSYS_NO_PATHCONV=1`.
 - Never use `localhost` in a connection string on Windows — it resolves to
   IPv6 `::1` first and costs ~2.1s per new connection. Always `127.0.0.1`.
+  The rule inverts for the Vite dev server, which binds `::1` *only*: open
+  `http://localhost:5173`, because `http://127.0.0.1:5173` refuses the
+  connection outright. Both are in the API's CORS origin list for that reason.
 - The embedding client holds one long-lived `httpx.Client` and calls
   `/api/embed` with a batch. One-text-per-request is 30x slower.
 - `uv run alembic check` belongs beside mypy and ruff. It is the only one of
@@ -216,10 +219,13 @@ does not work" section.
    GIN index, backfilled from `game_tags`; `0005` rebuilds HNSW afterwards.
    `0004` drops HNSW first — see the convention above. Only 1,321 games have
    `required_age > 0`, so age filtering must also exclude mature tags.
-2. `embed_text` weights titles over tags — `{name}. {short_description} Tags:
-   ...` puts a short name first, so *EasyPianoGame* (tagged `Difficult`) ranks
-   for "easy relaxing game". Try name-last or repeated tags. One f-string plus
-   ~12 min re-embedding, and it earns a row in the Weekend 3 results table.
+2. DISPROVED, do not attempt. The claim was that `embed_text` weights titles
+   over tags and that name-last or repeated tags would fix it. Measured on real
+   rows: three recipes x with/without nomic prefixes, all six scored 1/5
+   relevant in the top 5, rankings unmoved. Deleting `{name}` from the f-string
+   does not remove the name from the text — 32,201 of 130,633 descriptions
+   (25%) start with the game's own name. See failures.md #19 before reopening
+   this.
 
 Next: Weekend 2 — React with editable filter chips, against the API above.
 `SearchResponse` carries `parsed`; posting it back with a filter removed is the

@@ -436,3 +436,83 @@ entirely correct here - `max_price=20`, `platforms=["linux"]`,
 `multiplayer=true`, `semantic_query="base builder"`. The filter underneath it
 was wrong. Checking parsed filters and checking returned games are two
 different tests, and only the second one found this.
+
+---
+
+## Measured non-fixes (2026-09-04)
+
+Two proposed improvements, both tested before implementation, both wrong. Kept
+here because a disproved idea is worth as much as a confirmed one and costs
+more to re-derive than to read.
+
+### 19. `embed_text` recipe: no measurable effect — NOT WORTH DOING
+
+**Hypothesis.** CLAUDE.md carried this from Weekend 1: `embed_text` is
+`{name}. {short_description} Tags: ...`, so a short name first outweighs the
+tags — *EasyPianoGame* (tagged `Difficult`) ranks for "easy relaxing game".
+Proposed fix: name-last or repeated tags, "one f-string plus ~12 min
+re-embedding".
+
+**Test.** Real `embed_text` from the database for 14 real games — the seven
+junk results the Elden Ring query returned, plus seven genuine souls-likes.
+Three recipes (current / name-last / no-name) crossed with the nomic
+`search_document:` + `search_query:` prefixes, scored against
+`"extremely hard to beat game like elden ring"`.
+
+**Result.** All six variants: **1 of 5 relevant in the top 5.** The rankings
+barely moved. Removing the name entirely left *Elden: Path of the Forgotten*,
+*Elo Hell*, *Elems* and *Elude* above *Hollow Knight*, *Blasphemous* and
+*Nioh*.
+
+**Why.** Deleting `{name}` from the f-string does not remove the name from the
+embedded text. **32,201 of 130,633 descriptions (25%) begin with the game's own
+name**, and 49,398 (38%) contain it somewhere. Steam blurbs open with the title
+by convention. The f-string never controlled the thing it was blamed for.
+
+Checked separately on the original *EasyPianoGame* case: no-name drops its
+score 0.714 → 0.654, but *A Short Hike* only reaches 0.515. The ranking never
+flips. The name was never the deciding factor.
+
+**Also tested: nomic task prefixes.** `nomic-embed-text` is trained with
+`search_document:` / `search_query:`, and neither the code nor Ollama's
+template (`TEMPLATE {{ .Prompt }}`) supplies them. Adding them nudged real
+souls-likes up ~0.03 and changed no ranking. Principled, but not worth a
+re-embed on its own — fold it into Weekend 3's `bge-m3` swap, which re-embeds
+anyway.
+
+### 20. Embedding-based tag shortlisting — WOULD REGRESS
+
+**Hypothesis.** The prompt carries all 452 tags (~1,400 tokens) and is
+demonstrably saturated: #13 records two separate occasions where added text
+silently destroyed scalar extraction. Embed the query, keep only the ~30
+nearest tags, and the prompt drops to ~100 tokens.
+
+**Test.** Embedded all 452 tags, ranked them against seven eval queries, and
+checked where the tags currently extracted actually land.
+
+| query | tag needed | rank of 452 |
+|---|---|---|
+| extremely hard to beat game like elden ring | `Souls-like` | **133** |
+| extremely hard to beat game like elden ring | `Difficult` | **51** |
+| cheap relaxing puzzle games, nothing scary | `Horror` | **171** |
+| gemütliches Aufbauspiel für zwei | `Cozy` | **354** |
+| gemütliches Aufbauspiel für zwei | `Co-op` | **211** |
+| entspanntes Spiel zum Abschalten | `Relaxing` | **89** |
+| cozy farming game with fishing | `Fishing` | 0 |
+| co-op base builder ... on linux | `Base-Building` | 1 |
+
+**Result.** A top-40 shortlist would delete tags that work today. Three failure
+classes:
+
+1. **Negation inverts the vector.** "nothing scary" embeds nowhere near
+   `Horror` — excluded tags are unreachable by construction.
+2. **German collapses.** `nomic-embed-text` is English-centric; `Cozy` at 354
+   of 452 is worse than random for the query that needs it.
+3. **Franchise references do not work.** "like elden ring" does not embed near
+   `Souls-like`, which is the whole point of the query.
+
+It works only for direct English topical mentions, which are the cases already
+succeeding. Abandoned.
+
+**What it did reveal.** "elden ring" cannot embed near `Souls-like` — but the
+ELDEN RING *row* carries that tag already. That is #21.

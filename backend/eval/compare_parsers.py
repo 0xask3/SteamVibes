@@ -29,6 +29,11 @@ QUERIES = [
     "something like dark souls but not fantasy",
     "free multiplayer shooter released after 2020",
     "cozy farming game with fishing",
+    # Four constraints at once, and the price sits last with a trailing $.
+    # Added after a prompt edit silently destroyed platform extraction on it
+    # while all ten queries above still passed - the harness could not catch a
+    # regression it never exercised.
+    "game that feels like call of duty, but no wars on linux under 30$",
     "gemütliches Aufbauspiel für zwei",
     "entspanntes Spiel zum Abschalten",
     "rundenbasierte Strategie mit Koop-Modus",
