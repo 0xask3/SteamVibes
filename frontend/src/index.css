@@ -1,0 +1,43 @@
+:root {
+  --bg: #0f1419;
+  --surface: #171d25;
+  --surface-2: #1f2731;
+  --border: #2a3441;
+  --text: #e5e9ef;
+  --muted: #8b98a8;
+  --accent: #66c0f4;
+  --accent-dim: #1b3a4f;
+  --warn: #f0a868;
+  --danger: #e06c75;
+
+  color-scheme: dark;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+code {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+input {
+  font: inherit;
+}
