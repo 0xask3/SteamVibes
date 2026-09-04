@@ -12,7 +12,10 @@ correct under that model.
 """
 
 import logging
+import threading
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -22,6 +25,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import settings
 from app.db import session_scope
+from app.embedding import embed_query
 from app.games import get_game
 from app.query_parser import parse_query
 from app.schemas import GameDetail, SearchRequest, SearchResponse
@@ -34,10 +38,42 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 
 logger = logging.getLogger(__name__)
 
+def _warm_models() -> None:
+    """Pull both Ollama models into VRAM before a user asks for them.
+
+    Measured cold: 21.9s for the first search, against 0.8s warm - almost all
+    of it loading 6.6GB of chat model plus the embedder. In a browser a 22s
+    spinner is indistinguishable from a hang.
+
+    This does not make cold loads disappear. OLLAMA_KEEP_ALIVE is 30m, so an
+    idle server evicts and the next search pays again; the frontend says so
+    while it waits. It moves the cost off the first user, which is where it
+    is most damaging.
+    """
+    started = time.perf_counter()
+    try:
+        embed_query("warmup")
+        parse_query("warmup")
+    except Exception:
+        # Never fatal: the API is still useful, the first search is just slow.
+        logger.warning("model warmup failed; first search will be slow", exc_info=True)
+        return
+    logger.info("models warm in %.1fs", time.perf_counter() - started)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    # In a thread, so uvicorn binds the port immediately rather than sitting
+    # unavailable for 20s. Daemon, so it cannot hold up shutdown.
+    threading.Thread(target=_warm_models, daemon=True).start()
+    yield
+
+
 app = FastAPI(
     title="Steam Vibe Search",
     description="Semantic search over ~139k Steam games, with structured filters.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Vite's dev server. Listed explicitly rather than "*" - the API is read-only
