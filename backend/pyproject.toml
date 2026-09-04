@@ -16,6 +16,9 @@ dependencies = [
     "tqdm>=4.67",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
+    # Used directly by eval/run_eval.py, so declared rather than relied on as a
+    # transitive dependency of uvicorn[standard].
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]
@@ -23,6 +26,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.14",
     "types-tqdm>=4.67",
+    "types-PyYAML>=6.0",
 ]
 
 [tool.ruff]

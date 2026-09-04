@@ -1,0 +1,147 @@
+# Labelled queries for recall@10. Run with `uv run python -m eval.run_eval`.
+#
+# `expect` lists app_ids that MUST appear in the top 10. This is deliberately
+# NOT complete ground truth - there is no way to label 130,651 games - it is a
+# set of results confident enough that missing one is a real failure.
+#
+# Every app_id was verified present, embedded, and above the review threshold
+# before being written here. A typo would look exactly like a recall failure.
+#
+# `lang` splits the results table, because the whole point of Weekend 3 is
+# measuring how far German degrades against an English-centric embedding model.
+# Ten German queries, per BUILD_PLAN's "at least 8".
+#
+# Several queries come straight from failures.md, marked with `from`. Those are
+# the ones that were observed to break, so a config change that fixes the
+# average while regressing them is not an improvement.
+
+- query: cozy farming sim with fishing
+  lang: en
+  expect: [413150, 666140, 1158160]   # Stardew Valley, My Time at Portia, Coral Island
+
+- query: co-op survival crafting with base building
+  lang: en
+  expect: [892970, 1169040, 105600]   # Valheim, Necesse, Terraria
+
+- query: extremely difficult souls-like
+  lang: en
+  expect: [367520, 774361, 283640]    # Hollow Knight, Blasphemous, Salt and Sanctuary
+
+- query: roguelike where the map changes every run
+  lang: en
+  from: "failures.md #7 - jargon read literally"
+  expect: [1145360, 588650, 646570]   # Hades, Dead Cells, Slay the Spire
+
+- query: relaxing puzzle game, nothing scary
+  lang: en
+  from: "failures.md #1 - negation in free text"
+  expect: [736260, 210970, 1049410]   # Baba Is You, The Witness, Superliminal
+
+- query: factory automation and logistics
+  lang: en
+  expect: [427520, 526870]            # Factorio, Satisfactory
+
+- query: colony management simulation
+  lang: en
+  expect: [294100, 457140]            # RimWorld, Oxygen Not Included
+
+- query: city builder
+  lang: en
+  expect: [255710, 323190]            # Cities: Skylines, Frostpunk
+
+- query: deckbuilding roguelike
+  lang: en
+  expect: [646570, 1102190, 1092790]  # Slay the Spire, Monster Train, Inscryption
+
+- query: time loop mystery where you relive the same day
+  lang: en
+  expect: [753640]                    # Outer Wilds
+
+- query: detective game about piecing together what happened
+  lang: en
+  expect: [653530, 632470]            # Return of the Obra Dinn, Disco Elysium
+
+- query: first person puzzle game with portals
+  lang: en
+  expect: [620, 257510]               # Portal 2, The Talos Principle
+
+- query: underwater survival and exploration
+  lang: en
+  expect: [264710]                    # Subnautica
+
+- query: metroidvania with tight combat
+  lang: en
+  expect: [367520, 774361]            # Hollow Knight, Blasphemous
+
+- query: narrative walking simulator with a strong story
+  lang: en
+  expect: [383870]                    # Firewatch
+
+- query: horror game that builds dread without jump scares
+  lang: en
+  from: "failures.md #10 - brutal reads as gore"
+  expect: [282140]                    # SOMA
+
+- query: chaotic co-op cooking party game
+  lang: en
+  expect: [448510, 728880]            # Overcooked, Overcooked! 2
+
+- query: rhythm game where you move to the beat
+  lang: en
+  expect: [247080]                    # Crypt of the NecroDancer
+
+- query: short wholesome game to finish in one evening
+  lang: en
+  from: "failures.md #6 - player context read as content"
+  expect: [1055540, 837470]           # A Short Hike, Untitled Goose Game
+
+- query: cozy game about conversation and atmosphere
+  lang: en
+  expect: [914800]                    # Coffee Talk
+
+# ---------------------------------------------------------------- German ----
+# Same corpus, English descriptions. These measure the embedding model, not the
+# data. Compound nouns are the thing to watch: Aufbauspiel, Koop-Modus,
+# Städtebau and Rätselspiel are single semantic units that an English-tuned
+# tokenizer shreds. See BUILD_PLAN, Weekend 3.
+
+- query: gemütliches Aufbauspiel für zwei
+  lang: de
+  from: "failures.md #9 - social constraints"
+  expect: [892970, 1169040]           # Valheim, Necesse
+
+- query: entspanntes Spiel zum Abschalten
+  lang: de
+  expect: [1055540, 413150, 914800]   # A Short Hike, Stardew Valley, Coffee Talk
+
+- query: sehr schweres Spiel wie Dark Souls
+  lang: de
+  expect: [367520, 774361]            # Hollow Knight, Blasphemous
+
+- query: Aufbauspiel mit Automatisierung
+  lang: de
+  expect: [427520, 526870]            # Factorio, Satisfactory
+
+- query: Roguelike bei dem sich die Karte jedes Mal ändert
+  lang: de
+  expect: [1145360, 588650]           # Hades, Dead Cells
+
+- query: entspanntes Bauernhofspiel mit Angeln
+  lang: de
+  expect: [413150, 666140]            # Stardew Valley, My Time at Portia
+
+- query: Städtebau-Simulation
+  lang: de
+  expect: [255710, 323190]            # Cities: Skylines, Frostpunk
+
+- query: Horrorspiel ohne Jumpscares
+  lang: de
+  expect: [282140]                    # SOMA
+
+- query: kooperatives Kochspiel für Freunde
+  lang: de
+  expect: [448510, 728880]            # Overcooked, Overcooked! 2
+
+- query: Rätselspiel mit Portalen
+  lang: de
+  expect: [620, 257510]               # Portal 2, The Talos Principle
