@@ -19,6 +19,19 @@ export interface ParsedQuery {
   released_after: number | null;
   multiplayer: boolean | null;
   max_required_age: number | null;
+
+  /** Minimum user reviews. Set from "popular" and friends, detected in code. */
+  min_reviews: number | null;
+
+  /**
+   * Set by the backend's referenced-game lookup, never by the model. When the
+   * query names a well-known game ("like elden ring"), its tags are appended
+   * to semantic_query and its name lands here. excluded_app_ids is populated
+   * only when the query also asked to leave that game out.
+   */
+  reference_game: string | null;
+  excluded_app_ids: number[];
+
   semantic_query: string;
 }
 

@@ -34,6 +34,8 @@ QUERIES = [
     # while all ten queries above still passed - the harness could not catch a
     # regression it never exercised.
     "game that feels like call of duty, but no wars on linux under 30$",
+    # Popularity plus an exclusion the trigram gap cannot yet handle.
+    "I like FPS shooters, suggest some excluding call of duty, which are also popular",
     "gemütliches Aufbauspiel für zwei",
     "entspanntes Spiel zum Abschalten",
     "rundenbasierte Strategie mit Koop-Modus",

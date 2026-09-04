@@ -92,5 +92,23 @@ export function chipsFor(parsed: ParsedQuery): Chip[] {
     });
   }
 
+  if (parsed.min_reviews !== null) {
+    chips.push({
+      key: "min_reviews",
+      label: `≥ ${parsed.min_reviews.toLocaleString()} reviews`,
+      remove: (p) => ({ ...p, min_reviews: null }),
+    });
+  }
+
+  if (parsed.excluded_app_ids.length > 0) {
+    // reference_game is the title the lookup matched, so this reads
+    // "not ELDEN RING" rather than "excluding 1 title".
+    chips.push({
+      key: "excluded_games",
+      label: `not ${parsed.reference_game ?? "referenced game"}`,
+      remove: (p) => ({ ...p, excluded_app_ids: [] }),
+    });
+  }
+
   return chips;
 }

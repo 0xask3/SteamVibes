@@ -66,6 +66,11 @@ def _apply_filters(stmt: Select[tuple], parsed: ParsedQuery) -> Select[tuple]:
         # have an empty array rather than NULL, so they correctly pass.
         stmt = stmt.where(not_(Game.tags.overlap(parsed.excluded_tags)))
 
+    if parsed.excluded_app_ids:
+        # "not including itself" after a referenced-game match. Set in code by
+        # app/title_lookup.py, never by the model.
+        stmt = stmt.where(Game.app_id.not_in(parsed.excluded_app_ids))
+
     if parsed.released_after is not None:
         stmt = stmt.where(
             Game.release_date >= func.make_date(parsed.released_after, 1, 1)
@@ -115,7 +120,11 @@ def search(
     threshold defaults to settings.review_threshold. Passing it explicitly is
     how Weekend 3 sweeps values without editing a query.
     """
-    effective_threshold = settings.review_threshold if threshold is None else threshold
+    # A "popular" request raises the review floor; max() rather than override,
+    # so it can never drop below the baseline quality gate that keeps
+    # 10-review shovelware out of every result set.
+    base_threshold = settings.review_threshold if threshold is None else threshold
+    effective_threshold = max(base_threshold, parsed.min_reviews or 0)
     unknown = _unknown_tags(parsed.required_tags + parsed.excluded_tags)
 
     embed_start = time.perf_counter()

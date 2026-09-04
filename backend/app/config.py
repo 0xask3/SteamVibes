@@ -56,6 +56,21 @@ class Settings(BaseSettings):
     # not a constant — Weekend 3 measures recall at several values.
     review_threshold: int = 10
 
+    # What a bare "popular" means, in reviews. p90 of the searchable corpus is
+    # 1,628 and p50 is 64, so this is roughly the top 12% - deliberately
+    # generous, because a long-tail discovery engine should not treat a
+    # well-loved 1,200-review indie as obscure. Never inlined in the prompt;
+    # it is formatted in, so this stays the single source of truth.
+    popular_min_reviews: int = 1_000
+
+    # Minimum reviews for a game name to be recognised inside a query. Common
+    # English words are real Steam titles - `Nothing` (9,260 reviews),
+    # `Something`, `SELF`, `Dollar`, `Beat` - so "nothing scary" matches a game
+    # without a floor here. At 50,000 the seven test queries produced zero
+    # false positives while still finding ELDEN RING and Stardew Valley.
+    # See failures.md #21.
+    title_match_min_reviews: int = 50_000
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

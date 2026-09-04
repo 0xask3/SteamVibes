@@ -11,14 +11,18 @@ Never a bare except, never silence.
 
 import difflib
 import logging
+import re
 from functools import lru_cache
+from typing import Any
 
 from sqlalchemy import select
 
+from app.config import settings
 from app.db import session_scope
 from app.llm import chat_json
 from app.models import GameTag
 from app.schemas import ParsedQuery
+from app.title_lookup import apply_reference
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +93,44 @@ capitals:
 """
 
 
+# "Popular" is detected here rather than in the prompt. Tried as a prompt rule
+# in the scalar block - on the theory that the two earlier regressions came
+# from editing the tag block - and it cost `not War` on one query and
+# `multiplayer` on another. Third confirmation that the prompt is full; see
+# failures.md #22. Numbers in the query ("at least 500 reviews") are NOT
+# handled as a result, which is the price of not touching the prompt.
+_POPULAR = re.compile(
+    r"\b(?:popular|well[-\s]known|famous|best[-\s]?selling|beliebt|bekannt\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def wants_popular(query: str) -> bool:
+    """True when the query asks for widely-played games."""
+    return _POPULAR.search(query) is not None
+
+
+# Fields the model must never fill. They are derived in code from the
+# referenced-game lookup, and the model has no way to know a real app_id -
+# left in the schema it invents plausible integers, and a wrong one silently
+# removes a real result. Stripping them also saves generation tokens.
+_CODE_ONLY_FIELDS = ("reference_game", "excluded_app_ids", "min_reviews")
+
+
+@lru_cache(maxsize=1)
+def _llm_schema() -> dict[str, Any]:
+    """ParsedQuery's JSON schema, minus the code-only fields.
+
+    Neither is in `required` - both carry defaults - so removing the properties
+    leaves a valid schema, and the remaining field order is untouched.
+    semantic_query must still come last. See CLAUDE.md.
+    """
+    schema = ParsedQuery.model_json_schema()
+    for field in _CODE_ONLY_FIELDS:
+        schema.get("properties", {}).pop(field, None)
+    return schema
+
+
 @lru_cache(maxsize=1)
 def get_tag_vocabulary() -> tuple[str, ...]:
     """Every real tag. All 452 fit in the prompt in ~1,400 tokens.
@@ -144,14 +186,16 @@ def parse_query(text: str, model: str | None = None) -> ParsedQuery:
         raw = chat_json(
             system=SYSTEM_PROMPT.format(tags=", ".join(vocabulary)),
             user=text,
-            schema=ParsedQuery.model_json_schema(),
+            schema=_llm_schema(),
             model=model,
         )
     except Exception:
         # Transport failure, missing model, non-JSON content. Log it with the
-        # query so it can be reproduced, then fall back.
+        # query so it can be reproduced, then fall back. The referenced-game
+        # lookup is pure SQL, so it still applies - "like elden ring" works
+        # even with no chat model at all.
         logger.warning("parser call failed for %r, falling back", text, exc_info=True)
-        return ParsedQuery(semantic_query=text)
+        return _apply_code_rules(ParsedQuery(semantic_query=text), text)
 
     try:
         parsed = ParsedQuery.model_validate(raw)
@@ -161,7 +205,7 @@ def parse_query(text: str, model: str | None = None) -> ParsedQuery:
         logger.warning(
             "parser returned unusable output for %r: %r", text, raw, exc_info=True
         )
-        return ParsedQuery(semantic_query=text)
+        return _apply_code_rules(ParsedQuery(semantic_query=text), text)
 
     # The model was told to copy tags exactly. It will not always.
     parsed.required_tags = _resolve_tags(parsed.required_tags, vocabulary)
@@ -172,4 +216,20 @@ def parse_query(text: str, model: str | None = None) -> ParsedQuery:
         logger.info("parser emptied semantic_query for %r, using raw text", text)
         parsed.semantic_query = text
 
-    return parsed
+    # Last, because it appends to whatever semantic_query ended up being.
+    return _apply_code_rules(parsed, text)
+
+
+def _apply_code_rules(parsed: ParsedQuery, text: str) -> ParsedQuery:
+    """Intents read from the query text rather than from the model.
+
+    Everything here was either measured to break the prompt when added to it,
+    or is not something a language model can know - a real app_id, for
+    instance. Applied on the fallback paths too, so a query naming a game or
+    asking for popular titles still works with no chat model at all.
+    """
+    if parsed.min_reviews is None and wants_popular(text):
+        parsed.min_reviews = settings.popular_min_reviews
+        logger.info("query asks for popular, min_reviews=%d", parsed.min_reviews)
+
+    return apply_reference(parsed, text)

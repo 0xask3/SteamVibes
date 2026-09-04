@@ -516,3 +516,152 @@ succeeding. Abandoned.
 
 **What it did reveal.** "elden ring" cannot embed near `Souls-like` — but the
 ELDEN RING *row* carries that tag already. That is #21.
+
+### 21. Franchise references, fixed by looking the game up
+
+**Query.** `extremely hard to beat game like elden ring, not including itself`
+
+**Got (before).** ELDEN RING at #1, then *Elden: Path of the Forgotten*,
+*Impossible Runner*, *Elo Hell*, *Elude*, *Elems*, *EllrLand*, *Eldegarde* —
+games matching the string "Eld", not the meaning. And "not including itself"
+was silently dropped: `ParsedQuery` could exclude *tags*, never *titles*, which
+#1 has flagged since Weekend 1.
+
+**Why.** Two things at once. The embedding cannot connect "elden ring" to
+`Souls-like` — measured 133rd of 452 tags (#20). And the schema had nowhere to
+put a title exclusion.
+
+**Fixed by** `app/title_lookup.py`. If a game name appears inside the query and
+that game clears `TITLE_MATCH_MIN_REVIEWS`, its top 6 tags are appended to
+`semantic_query`, and its `app_id` goes into a new `excluded_app_ids` when the
+query asked to leave it out. No LLM, one SQL statement, 1-2ms.
+
+    semantic_query: "game like elden ring.
+                     Souls-like, Open World, Dark Fantasy, RPG, Difficult, Action RPG"
+    excluded_app_ids: [1245620]
+
+**Got (after).** ELDEN RING NIGHTREIGN, *The Memory of Eldurim*, *Eldegarde*,
+**DARK SOULS™ II**, *Trapped Souls*, *Alaloth*, *God Souls*. Every string-match
+result gone except *Eldegarde*; real souls-likes in. ELDEN RING itself absent,
+NIGHTREIGN correctly kept — a different game.
+
+**The review floor is the whole trick.** Common English words are real Steam
+titles: `Nothing` (9,260 reviews), `Something`, `SELF`, `Dollar`, `Beat`,
+`Feels`, `GAME`. Without a floor, "nothing scary" matches a horror game called
+*Nothing*. At 50,000 all seven test queries produced zero false positives while
+still finding ELDEN RING (1,056,677) and Stardew Valley (886,195).
+
+**Tags are appended, not required.** ELDEN RING carries six tags; requiring all
+six returns almost nothing and requiring a guessed subset is arbitrary. Biasing
+the query vector has no such cliff — worst case it does nothing.
+
+**Still open.** Franchise names with trademark or edition suffixes do not
+match: Steam stores `DARK SOULS™: Prepare To Die Edition` and
+`Call of Duty®: Modern Warfare`, so the query text is *shorter* than the name
+and `query ILIKE '%name%'` fails in that direction. Needs trigram matching, a
+`pg_trgm` extension and a migration, and carries real false-positive risk.
+Worth its own measurement.
+
+### 22. "popular" had nowhere to go — and the prompt is full, confirmed
+
+**Query.** `I like FPS shooters, suggest some excluding call of duty, which are
+also popular`
+
+**Got.** Results between 43 and 6,007 reviews — *FPSBois* (48), *Sniper Game*
+(43), *FPS Training* (77). "which are also popular" was stripped from
+`semantic_query` and then discarded: `ParsedQuery` had no popularity concept at
+all, despite `search()` already taking a `threshold` nothing could reach.
+
+**Fixed by** `min_reviews` on `ParsedQuery`, raising search's floor with
+`max(base, min_reviews)` so it can never drop below the baseline quality gate.
+`POPULAR_MIN_REVIEWS` in config, not inlined.
+
+**The prompt attempt, and its cost.** The obvious route was a prompt rule. The
+two earlier regressions (#13) both came from editing the *tag* block at the
+bottom, so the hypothesis was that the *scalar* block would be safe. It was
+not. One added rule, measured over 12 queries:
+
+| query | before | after the rule |
+|---|---|---|
+| game that feels like call of duty ... on linux | `linux  not War` | `linux` |
+| rundenbasierte Strategie mit Koop-Modus | `Turn-Based Strategy  Co-op  multiplayer` | `Turn-Based Strategy  Co-op` |
+
+Reverted. Detected in code instead — a regex over "popular", "well-known",
+"famous", "beliebt", "bekannt" — and the eval returned to 12 queries, 0
+disagreements, with the new query extracting `>= 1,000 reviews`.
+
+**This is the third confirmation that the prompt is saturated**, and the first
+that position within it does not matter. `min_reviews` is stripped from the
+schema handed to Ollama along with the other code-only fields. The price is
+that a stated number — "at least 500 reviews" — is not understood. Accepted:
+one unhandled phrasing is cheaper than a filter that silently stops working.
+
+**Still weak, and not fixed by this.** At 1,000 the query returns aim trainers
+— *Aim Hero*, *Aimtastic*, *3D Aim Trainer* — because `semantic_query` is
+"FPS shooters", two words whose vector sits close to anything literally about
+FPS aiming. Requiring the `FPS` tag does not help; those games genuinely carry
+it. The threshold is what separates them:
+
+| floor | top results |
+|---|---|
+| 1,000 | Aim Hero, Tower of Guns, FPS Game: Dev Test, Aimtastic |
+| 5,000 | Quake Live, A.V.A Global, S.K.I.L.L., Black Squad |
+| 20,000 | SUPERHOT, Rainbow Six Siege, Black Squad |
+
+Two real limits behind that. Short queries produce diffuse vectors where
+literal name matches dominate — the same mechanism as #19. And "excluding call
+of duty" still does nothing, because `Call of Duty®: Modern Warfare` is longer
+than the query text (#21's trigram gap), so the query silently keeps the games
+it asked to drop.
+
+### 23. Franchise names — prefix matching, no pg_trgm needed
+
+**Corrects #21**, which recorded this as needing "trigram matching, a `pg_trgm`
+extension and a migration, and carries real false-positive risk". It needed
+none of those. The diagnosis was right and the proposed remedy was wrong.
+
+**The problem.** `Call of Duty®` and `DARK SOULS™: Prepare To Die Edition` are
+*longer* than what anyone types, so `:query ILIKE '%' || name || '%'` — asking
+whether the name sits inside the query — fails for exactly the games most
+likely to be referenced.
+
+**The fix.** Invert it. Take word windows from the query and ask whether any of
+them *opens* a name: `lower(name) LIKE :phrase || '%'`. Plain SQL, no
+extension, no migration, no similarity threshold to tune.
+
+| query | matched | before |
+|---|---|---|
+| ...like call of duty... | **Call of Duty®** (714,114) | *(none)* |
+| something like dark souls... | **DARK SOULS® III** (413,775) | *(none)* |
+| ...like elden ring... | ELDEN RING | ELDEN RING |
+| ...like stardew valley... | Stardew Valley | Stardew Valley |
+| nothing scary / 20 dollars / 7 year old | *(none)* | *(none)* |
+
+1-26ms, and the same review floor keeps the false-positive count at zero.
+
+**Exclusion had to be generalised twice.** `wants_reference_excluded` only
+matched "not including *itself*" — the oblique phrasing. "excluding call of
+duty" names the game again, so it also looks for an excluder within two words
+of the phrase that matched.
+
+Then excluding one `app_id` proved insufficient: *Modern Warfare* and *Black
+Ops Cold War* stayed in results for a query that said to exclude Call of Duty.
+The match is a prefix, so the exclusion is one too — 24 franchise entries
+removed rather than one.
+
+**Result for** `I like FPS shooters, suggest some excluding call of duty, which
+are also popular`:
+
+    before  Aim Hero, Aimtastic, FPSBois (48 reviews), FPS Training, Sniper Game
+    after   Squad (210k), Arma 3 (283k), Battlefield 2042 (297k), Insurgency,
+            Battlefield 4, Medal of Honor, Sniper Ghost Warrior 3
+
+Three mechanisms had to work together: the review floor removed the shovelware,
+the borrowed tags (`FPS, Multiplayer, Shooter, Military`) pulled the vector
+toward military shooters, and the franchise exclusion removed what was asked
+for. None of the three alone was enough.
+
+**Known behaviour change.** Prefix exclusion catches sequels and spinoffs:
+"like elden ring, not including itself" now drops ELDEN RING NIGHTREIGN too.
+Defensible — someone asking for games *like* Elden Ring wants different games —
+but it is a judgement call, not a derivation.

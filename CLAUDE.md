@@ -127,6 +127,31 @@ Two categories, and I'll say which one we're in at the top of each session:
   boundary needs `@computed_field` above it — `under_delivered` was invisible
   in JSON while working fine from Python, which would have silently dropped
   the "filters starved the index" warning at exactly the point a user sees it.
+- `app/title_lookup.py` recognises a game named in the query and borrows its
+  tags — the embedding cannot, "elden ring" is 133rd of 452 tags away from
+  `Souls-like`. Tags are appended to `semantic_query`, never added to
+  `required_tags`: requiring all six of a game's tags returns almost nothing.
+- The title match is a PREFIX match — word windows from the query against the
+  start of a name — not a substring one. Steam names are longer than what
+  anyone types (`Call of Duty®`, `DARK SOULS™: Prepare To Die Edition`), so
+  asking whether the name sits inside the query fails for exactly the games
+  people reference. No `pg_trgm` and no migration; failures.md #21 wrongly
+  said otherwise and #23 corrects it. Exclusion is a prefix too, so "excluding
+  call of duty" drops all 24 entries rather than one — which also means it
+  drops sequels and spinoffs.
+  `TITLE_MATCH_MIN_REVIEWS=50000` is load-bearing, not tuning — common words
+  are real titles (`Nothing` has 9,260 reviews, plus `Something`, `Dollar`,
+  `SELF`, `Beat`), so a lower floor makes "nothing scary" match a horror game.
+- `reference_game`, `excluded_app_ids` and `min_reviews` are stripped from the
+  schema handed to Ollama, in `_llm_schema()`. All three are derived in code.
+  Left in, the model invents plausible app_ids, and a wrong one silently
+  removes a real result.
+- The prompt is FULL, and position within it does not help. Three separate
+  edits have now each silently destroyed a working filter — twice from the tag
+  block, once from the scalar block (failures.md #13, #22). New intents go in
+  code as a regex over the query text, the way `wants_popular()` and
+  `wants_reference_excluded()` do. The cost is that unphrased variants are
+  missed; the alternative has cost a filter every single time.
 - Commit per feature, not per session.
 - When something breaks, three lines in `NOTES.md`: what broke, what I
   tried, what fixed it.
@@ -227,7 +252,13 @@ does not work" section.
    (25%) start with the game's own name. See failures.md #19 before reopening
    this.
 
-Next: Weekend 2 — React with editable filter chips, against the API above.
+Weekend 2 COMPLETE: parser, API and React with editable filter chips all done.
+
+Next: Weekend 3 — German, evaluation, packaging. Two things worth carrying:
+`bge-m3` re-embedding should fold in the nomic `search_document:`/
+`search_query:` prefixes (failures.md #19 — principled, but not worth a
+re-embed of their own), and trigram title matching for franchise names with
+™/edition suffixes (failures.md #21).
 `SearchResponse` carries `parsed`; posting it back with a filter removed is the
 chip interaction, and it costs no LLM call.
 

@@ -44,6 +44,22 @@ class ParsedQuery(BaseModel):
     multiplayer: bool | None = None
     max_required_age: int | None = None
 
+    # Minimum user reviews. "popular" maps to settings.popular_min_reviews; an
+    # explicit count in the query is used as given. Raises search's review
+    # floor, never lowers it - see search().
+    min_reviews: int | None = None
+
+    # Both set in code by app/title_lookup.py, never by the model - they are
+    # stripped from the schema handed to Ollama. A hallucinated app_id would
+    # silently remove a real result, and the model cannot know real ones.
+    #
+    # reference_game is the title the query pointed at ("like elden ring");
+    # excluded_app_ids filters it out, but only when the query asked. The name
+    # is carried so a filter chip can read "not ELDEN RING" rather than
+    # "excluding 1 title".
+    reference_game: str | None = None
+    excluded_app_ids: list[int] = Field(default_factory=list)
+
     # The part that gets embedded. Everything else is a WHERE clause.
     semantic_query: str
 
@@ -59,6 +75,8 @@ class ParsedQuery(BaseModel):
                 self.released_after is not None,
                 self.multiplayer is not None,
                 self.max_required_age is not None,
+                self.min_reviews is not None,
+                self.excluded_app_ids,
             )
         )
 
@@ -80,6 +98,12 @@ class ParsedQuery(BaseModel):
             parts.append("singleplayer")
         if self.max_required_age is not None:
             parts.append(f"age <= {self.max_required_age}")
+        if self.min_reviews is not None:
+            parts.append(f">= {self.min_reviews:,} reviews")
+        if self.excluded_app_ids:
+            # The name when we have it, so the chip reads "not ELDEN RING".
+            label = self.reference_game or f"{len(self.excluded_app_ids)} title(s)"
+            parts.append(f"not {label}")
         return parts
 
 
