@@ -1,7 +1,12 @@
-# Weekend 1 uses only `db`. The `ollama` service exists so that a clean
-# machine can run the whole stack with one command (Weekend 3 goal).
-# During development Ollama runs natively on the host for GPU access —
-# see .env.example. Do not start both; they both want port 11434.
+# `docker compose up` brings up db, backend and frontend. Ollama is NOT included
+# by default: embedding 130,651 games needs the GPU, and the GPU is on the host.
+# The containerised Ollama is behind a profile so it cannot accidentally fight
+# the host's for port 11434 - start it with `--profile ollama` only if you have
+# no host install and accept CPU inference.
+#
+# What this does NOT do is populate the database. A clean volume comes up with
+# an empty schema; loading and embedding is ~25 minutes and needs the host GPU,
+# so it stays a documented step. See README.md.
 
 services:
   db:
@@ -25,14 +30,62 @@ services:
       timeout: 5s
       retries: 10
 
+  backend:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Host is `db`, not 127.0.0.1: inside the container that address is the
+      # container itself. This is why DATABASE_URL is set here rather than
+      # inherited from .env, which points at the host for local development.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-steam}:${POSTGRES_PASSWORD:-steam}@db:5432/${POSTGRES_DB:-steamvibe}
+      # The host's Ollama, for the GPU. With `--profile ollama` running instead,
+      # override this to http://ollama:11434.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL_DOCKER:-http://host.docker.internal:11434}
+      EMBED_MODEL: ${EMBED_MODEL:-snowflake-arctic-embed2}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen3.5:9b}
+      CHAT_THINK: ${CHAT_THINK:-false}
+      CHAT_NUM_CTX: ${CHAT_NUM_CTX:-8192}
+      REVIEW_THRESHOLD: ${REVIEW_THRESHOLD:-10}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+    # Docker Desktop resolves host.docker.internal on its own; native Linux
+    # does not, and this is what makes the same file work on both.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked into the bundle at build time. The browser runs on the host, so
+        # it reaches the backend through the published port above, not through
+        # the compose network.
+        VITE_API_URL: ${VITE_API_URL:-http://127.0.0.1:8000}
+    depends_on:
+      - backend
+    # Host port 5173 on purpose: it is what the API's CORS allowlist already
+    # names, so containerising the frontend needs no backend code change.
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+
   ollama:
     image: ollama/ollama:latest
+    profiles: ["ollama"]
     ports:
       - "11434:11434"
     volumes:
       - ollama:/root/.ollama
     # Uncomment for GPU inside the container. Requires the NVIDIA Container
-    # Toolkit; without it Ollama runs on CPU and embedding 120k games is slow.
+    # Toolkit; without it Ollama runs on CPU and embedding 130k games is slow.
     # deploy:
     #   resources:
     #     reservations:

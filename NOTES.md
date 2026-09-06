@@ -4,6 +4,39 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-06 — The eval cannot tell 2.3 points from nothing
+
+**What broke.** Arctic looked like it needed `rrf w=0.10` rather than the shipped
+0.20, on the grounds that `tail` was 75.0% at 0.10 and 72.7% at 0.20. Before
+proposing a ranking change I swept finer — 0.10 through 0.25 — to find the actual
+cliff. The finer sweep disagreed with the coarse one: `tail` came back 2.3 points
+lower at every weight, `core` and `specific` identical. One query out of 44, on
+the same model and the same queries.
+
+**What I tried.** Three experiments, cheapest first. The same config run twice
+was byte identical, ruling out query-time nondeterminism. Dropping and rebuilding
+the HNSW index over unchanged vectors was byte identical, ruling out graph build
+order. That left the vectors — and there was a specific cause, not general GPU
+noise: the first arctic corpus was embedded in two halves under different
+`num_batch` settings, 2,048 for the first 27,648 rows and 4,096 for the rest,
+because I added that setting midway through fixing the crash. Batch size changes
+how the forward pass is grouped, which changes float summation order, which flips
+whatever sits near a tie.
+
+**What fixed it.** Nothing needed fixing in the code. The weight stays at 0.20,
+because the entire case for 0.10 was 2.3 points and the reproducibility floor is
+2.3 points. The model verdict survives — arctic wins by 6.7 overall and 15.9 on
+`specific`, eight and seven queries, comfortably clear of a one-query floor.
+
+Twenty minutes and four evals to decide *not* to make a change, which was the
+cheapest outcome on offer: the alternative was a ranking change justified by a
+number I had never checked was real. The uncomfortable part is point 3 in
+failures.md #31 — having measured the floor, several differences I reported
+earlier this week sit under it. And the guards do not help here: a corpus
+embedded two different ways passes `verify_corpus_model()`, which sees one model
+name, and `verify_corpus_complete()`, which sees no gaps. Never change batch
+settings mid-corpus.
+
 ## 2026-09-06 — Arctic wins, and the reason qwen3 was picked was an artifact
 
 **What broke.** Nothing today — what broke was a conclusion from two days ago.

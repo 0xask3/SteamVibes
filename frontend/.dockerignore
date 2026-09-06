@@ -1,0 +1,8 @@
+# Installed inside the image by `npm ci`. Copying the host's tree in would both
+# bloat the build context and risk platform-specific binaries.
+node_modules/
+dist/
+
+.env
+.env.*
+*.log

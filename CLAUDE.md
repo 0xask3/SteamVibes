@@ -192,6 +192,14 @@ Two categories, and I'll say which one we're in at the top of each session:
   config.py raises if it does, because stage 1 coming up short is silent.
 - `HNSW_EF_SEARCH=200`, not pgvector's default of 40. The default cost 3.3
   recall points at threshold 10 (15.0% against the exact scan's 18.3%) for 8ms.
+- Differences below ~2.5 points at n=44, or ~1 point at n=118, are NOT results.
+  That is this eval's reproducibility floor, measured rather than guessed: two
+  embeds of the same model on the same corpus move `tail` by 2.3 points, one
+  query. Query time and the HNSW build are both byte-deterministic; the vectors
+  are not. Check a difference against the floor before writing it down, and
+  never change embedding batch settings mid-corpus - a corpus embedded two ways
+  passes both `verify_corpus_model()` and `verify_corpus_complete()`, because
+  one sees a single model name and the other sees no gaps. See failures.md #31.
 - Ranking weight is chosen by the `tail` tier and the tail-cost counter-metric,
   NEVER by `core` or `specific` recall. Those two tiers' targets all sit above
   the 93rd percentile of the corpus by review count, so recall on them rises
@@ -200,10 +208,12 @@ Two categories, and I'll say which one we're in at the top of each session:
   #26). The `tail` tier's targets sit at the 37th-75th percentile and behave
   correctly: flat to w=0.20, then falling. `run_eval` also prints median reviews
   returned and share under 1k, which need no labels at all.
-  `rrf w=0.20` is the largest weight that costs the tail nothing - 63.6% at
-  w=none and 63.6% at w=0.20, while core gains 6.7 points. w=0.40 buys 1.7 more
-  core points for 4.5 tail points. Nothing in the repo justifies a higher
-  weight; if you want one, produce evidence from `tail`, not from `core`.
+  `rrf w=0.20` stands on arctic too, though for a different reason than it did
+  on qwen3: on arctic `tail` is 72.7% at w=none and 70.5% from 0.125 up, so the
+  weight costs one query, and the 0.10-versus-0.20 case is smaller than the
+  reproducibility floor above. w=0.40 costs another and w=1.00 costs eleven.
+  Nothing in the repo justifies a higher weight; if you want one, produce
+  evidence from `tail` that clears the floor, not from `core`.
 - Target obscurity is what lets an eval tier price a ranking weight. Query
   wording is not, and it was measured: rewriting queries "in a player's words"
   left content-word overlap with `embed_text` at 37% in both tiers and put MORE
@@ -212,14 +222,40 @@ Two categories, and I'll say which one we're in at the top of each session:
   sits in the corpus, not how the query reads. New tiers come from
   `sample_longtail.sql`; check its percentile column before writing a word. See
   failures.md #28.
+- `docker compose up` runs db + backend + frontend. Three things in that file
+  are load-bearing rather than stylistic. The frontend publishes on host 5173
+  because that is the port `main.py`'s CORS allowlist already names, so
+  containerising it needed no backend change - moving it breaks search from the
+  UI with a CORS error and no server-side log. The backend reaches Ollama at
+  `host.docker.internal` (with `extra_hosts: host-gateway`, which is what makes
+  the same file work on native Linux), never `127.0.0.1`, which inside a
+  container is the container. And `ollama` sits behind `--profile ollama` so it
+  cannot take port 11434 from the host install that actually has the GPU.
+- Ingest CANNOT run inside the backend container: the build context is
+  `./backend`, so `data/games.json` is not in the image, and embedding wants the
+  host GPU anyway. `docker compose up` therefore reaches a working API over an
+  EMPTY database, which is the honest tradeoff and is documented in README's
+  quickstart rather than papered over.
 - Commit per feature, not per session.
 - When something breaks, three lines in `NOTES.md`: what broke, what I
   tried, what fixed it.
 
 ## Current state
 
-Weekend 1 COMPLETE. Weekend 2 COMPLETE. Weekend 3: 1024-dim re-embed and the
-three-model comparison done. Migrations 0001-0007.
+Weekend 1 COMPLETE. Weekend 2 COMPLETE. Weekend 3 COMPLETE: 1024-dim re-embed,
+the three-model comparison, the 118-query eval, `README.md`, and Compose
+services for `backend` and `frontend`. Migrations 0001-0007.
+
+`README.md` leads with what does NOT work, per BUILD_PLAN - weakest tier and
+why, the missing quality term, the German gap, six unretrievable tail targets,
+the full parser prompt. Keep it that way; every number in it is reproducible
+from `run_eval` and several were corrected during writing because they had been
+measured under the previous embedding model.
+
+`.env.example` existed but had drifted: it still carried `EMBED_DIM`, which
+`.env` itself documents as controlling nothing. It is now in sync and is the
+only way a fresh clone can start, because `database_url` is the one setting in
+`config.py` with no default and `.env` is gitignored.
 
 API: `app/main.py` serves `POST /api/search`, `GET /api/game/{app_id}` and
 `GET /api/health` over the same `search()` the CLI uses — no second
@@ -299,7 +335,7 @@ than requested (measured 4 of 10 at `--threshold 5000`). It costs latency —
 ~150ms at threshold 10, ~1450ms at 5000. Watch this when Weekend 2 stacks
 filters.
 
-Failure modes: `backend/eval/failures.md`, 30 documented with mechanisms. That
+Failure modes: `backend/eval/failures.md`, 31 documented with mechanisms. That
 file is the raw material for `eval/queries.yaml` and for the README's "what
 does not work" section.
 
@@ -362,11 +398,11 @@ obscure game. The `tail` tier asks directly and arctic wins it. Do not use a
 threshold sweep as a proxy for long-tail retrieval again - that is what `tail` is
 for. See failures.md #30.
 
-**CAVEAT, live state: the corpus is embedded with `qwen3-embedding:0.6b` right
-now**, because it was measured second. Shipping the decision above needs one more
-`--reload` (~30 min): `alembic downgrade 0006`, set `EMBED_MODEL`,
-`embed_all --reload`, `alembic upgrade head`. Measure the incumbent first next
-time, or pay for the round trip.
+SHIPPED. All 130,651 rows carry an arctic vector, `.env` and the `config.py`
+default both name it, and the index is rebuilt. At `rrf w=0.20`: core 17.8%,
+specific 79.5%, tail 70.5%, overall 60.5%, median 147 reviews returned, 74% under
+1k, 84ms. (Measure the incumbent FIRST next time - measuring it second cost an
+extra 30-minute round trip back to the winner.)
 
 German is NOT a model problem. Arctic's `specific` gain is entirely English -
 65.7 -> 85.7 while German sits at 55.6% for both models - so swapping to the
