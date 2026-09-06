@@ -36,6 +36,16 @@ QUERIES = [
     "game that feels like call of duty, but no wars on linux under 30$",
     # Popularity plus an exclusion the trigram gap cannot yet handle.
     "I like FPS shooters, suggest some excluding call of duty, which are also popular",
+    # Four clauses, and `multiplayer` is the one that falls off the end: the
+    # model returns None here while every shorter phrasing gives False, and
+    # moving "single player" earlier in this same sentence fixes it. Now caught
+    # by wants_singleplayer() in code. The filter line must read `singleplayer`.
+    # See failures.md #32.
+    "call of duty like game, but not including itself, also popular, single player",
+    # The other half of #32: the referenced game's tags must not contradict the
+    # filters just extracted. Resident Evil carries `Horror`, so this excluded
+    # Horror in SQL while appending it to the text being embedded.
+    "like resident evil but nothing scary",
     "gemütliches Aufbauspiel für zwei",
     "entspanntes Spiel zum Abschalten",
     "rundenbasierte Strategie mit Koop-Modus",

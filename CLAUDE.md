@@ -184,6 +184,27 @@ Two categories, and I'll say which one we're in at the top of each session:
   code as a regex over the query text, the way `wants_popular()` and
   `wants_reference_excluded()` do. The cost is that unphrased variants are
   missed; the alternative has cost a filter every single time.
+- Being IN the prompt is not the same as being reliable. `multiplayer` is in
+  the prompt and the model fills it correctly on every short query, yet returned
+  null on `call of duty like game, but not including itself, also popular,
+  single player` — four competing clauses, with the ask last. Move "single
+  player" earlier in that same sentence and it comes back. So a code rule is not
+  only for intents the prompt cannot hold; it is also the net under the ones it
+  already has. `wants_singleplayer()` FILLS, never overrides: the model was
+  observed returning no value, never a wrong one, and overriding would break
+  "single player or co-op". Any such regex needs a negation guard — a missing
+  filter returns too much, a backwards one returns confidently wrong results.
+  There is no `wants_multiplayer()` on purpose: "no multiplayer" contains
+  "multiplayer". See failures.md #32.
+- `apply_reference` must never borrow a tag that contradicts the filters just
+  extracted. The referenced game's tags describe the GAME, not the request, so
+  "like resident evil but nothing scary" excluded `Horror` in SQL while
+  appending it to the text being embedded — the WHERE clause deleting a category
+  the ORDER BY was hunting. `_contradicts_filters()` checks `excluded_tags` and
+  the multiplayer axis, which is why `_apply_code_rules` calls `apply_reference`
+  LAST, after the code rules that set those. Exact match only: excluding
+  `Horror` still borrows `Survival Horror`, because a substring rule would make
+  an excluded `Action` drop `Action RPG` and `Action Roguelike`.
 - Search ranking is two-stage: HNSW retrieves `RERANK_CANDIDATES` rows by pure
   cosine distance, then stage 2 reorders them with a popularity term. The blend
   can never go in the first ORDER BY - pgvector only accelerates
@@ -200,6 +221,14 @@ Two categories, and I'll say which one we're in at the top of each session:
   never change embedding batch settings mid-corpus - a corpus embedded two ways
   passes both `verify_corpus_model()` and `verify_corpus_complete()`, because
   one sees a single model name and the other sees no gaps. See failures.md #31.
+- `run_eval --parse` has a SECOND floor on top of that one, and it is the
+  parser. Two runs minutes apart differed by exactly one query, and re-parsing
+  that query five times gave the same tags every time — so the parser is
+  deterministic within a run and not across runs, at `temperature=0`, same model,
+  same text. A one-query `--parse` difference is not evidence. When a `--parse`
+  number moves, diff the per-query lines and prove the change can reach the
+  query that moved before believing it; on the entry that found this, it could
+  not. See failures.md #32.
 - Ranking weight is chosen by the `tail` tier and the tail-cost counter-metric,
   NEVER by `core` or `specific` recall. Those two tiers' targets all sit above
   the 93rd percentile of the corpus by review count, so recall on them rises
@@ -335,7 +364,7 @@ than requested (measured 4 of 10 at `--threshold 5000`). It costs latency —
 ~150ms at threshold 10, ~1450ms at 5000. Watch this when Weekend 2 stacks
 filters.
 
-Failure modes: `backend/eval/failures.md`, 31 documented with mechanisms. That
+Failure modes: `backend/eval/failures.md`, 32 documented with mechanisms. That
 file is the raw material for `eval/queries.yaml` and for the README's "what
 does not work" section.
 

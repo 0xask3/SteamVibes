@@ -26,6 +26,31 @@ logger = logging.getLogger(__name__)
 # swamping the user's own words in the embedded text.
 TAGS_FROM_REFERENCE = 6
 
+# Tags that contradict `multiplayer=False`, so a query that asked to play alone
+# never has them appended to its own embedded text. Read off the real 452-tag
+# vocabulary rather than guessed, because a tag that does not exist would sit
+# here doing nothing and look like it worked.
+#
+# `PvE`, `Team-Based` and `Social Deduction` are deliberately absent: a
+# singleplayer game can legitimately carry all three, so dropping them would
+# discard signal the query never objected to.
+MULTIPLAYER_TAGS = frozenset(
+    {
+        "4 Player Local",
+        "Asynchronous Multiplayer",
+        "Co-op",
+        "Co-op Campaign",
+        "Local Co-Op",
+        "Local Multiplayer",
+        "MMORPG",
+        "Massively Multiplayer",
+        "Multiplayer",
+        "Online Co-Op",
+        "PvP",
+        "Split Screen",
+    }
+)
+
 # Below this a name is too generic to be a deliberate reference. "Beat", "GAME"
 # and "Doll" are all real titles.
 MIN_NAME_LENGTH = 6
@@ -69,6 +94,27 @@ def wants_reference_excluded(query: str, matched_phrase: str | None = None) -> b
     return False
 
 
+def _contradicts_filters(tag: str, parsed: ParsedQuery) -> bool:
+    """True when borrowing `tag` would fight a filter the query already set.
+
+    The reference game's tags describe the game, not the request. Resident Evil
+    carries `Horror`, so "like resident evil but nothing scary" was excluding
+    Horror in SQL while asking the vector for it - the WHERE clause deleting a
+    category the ORDER BY was hunting. Same shape for `multiplayer=False` and
+    Call of Duty's `Multiplayer`.
+
+    Exact match only. A substring rule would catch `Dark Fantasy` under an
+    excluded `Fantasy`, but it would also make an excluded `Action` drop
+    `Action RPG` and `Action Roguelike`, which is a far larger behaviour change
+    than the defect justifies. See failures.md #32.
+    """
+    if tag in parsed.excluded_tags:
+        return True
+    if parsed.multiplayer is False and tag in MULTIPLAYER_TAGS:
+        return True
+    return parsed.multiplayer is True and tag == "Singleplayer"
+
+
 def apply_reference(parsed: ParsedQuery, query: str) -> ParsedQuery:
     """Fold a named game's tags into `parsed`, mutating and returning it.
 
@@ -76,6 +122,10 @@ def apply_reference(parsed: ParsedQuery, query: str) -> ParsedQuery:
     appended to semantic_query rather than added to required_tags. Requiring
     all six of ELDEN RING's tags would return almost nothing, and picking a
     subset would be arbitrary - biasing the query vector has no such cliff.
+
+    Reads `parsed.excluded_tags` and `parsed.multiplayer`, so it must run AFTER
+    the parse and after query_parser's code rules - which is where
+    _apply_code_rules calls it from.
     """
     match = _find_referenced_game(query)
     if match is None:
@@ -84,7 +134,15 @@ def apply_reference(parsed: ParsedQuery, query: str) -> ParsedQuery:
     name, app_id, tags, phrase = match
     parsed.reference_game = name
 
-    borrowed = [tag for tag in tags[:TAGS_FROM_REFERENCE] if tag]
+    wanted = [tag for tag in tags[:TAGS_FROM_REFERENCE] if tag]
+    borrowed = [tag for tag in wanted if not _contradicts_filters(tag, parsed)]
+    if dropped := [tag for tag in wanted if tag not in borrowed]:
+        # Logged rather than dropped quietly, for the same reason _resolve_tag
+        # logs: this changes what gets embedded, and a silent change to the
+        # query vector is exactly the kind that produces plausible results
+        # forever.
+        logger.info("not borrowing %s - contradicts the query", ", ".join(dropped))
+
     if borrowed:
         joined = ", ".join(borrowed)
         parsed.semantic_query = f"{parsed.semantic_query.rstrip('. ')}. {joined}"

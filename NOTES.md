@@ -4,6 +4,46 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-06 — "single player" parsed away, and the reference tags argued back
+
+**What broke.** `call of duty like game, but not including itself, also popular,
+single player` returned Counter-Strike at rank 1. Counter-Strike is not single
+player.
+
+**What I tried.** Read the `filters:` line before touching the ranking, which is
+what made this quick: it printed `>= 1,000 reviews  not Call of Duty®` and
+nothing else, so `multiplayer` had come back null and no `NOT EXISTS` clause was
+ever built. Varied one clause at a time at temperature 0 — every shorter
+phrasing gives `False`, including `call of duty like game, single player` and
+`... also popular, single player`. Only all four clauses together, with the ask
+last, fails; move "single player" earlier in the same sentence and it comes
+back. That is failures.md #13/#22 again: the prompt is full and the last thing
+mentioned is what falls off.
+
+Isolating it with a hand-built `ParsedQuery` also exposed a second, unrelated
+defect: `apply_reference` had appended Call of Duty's tags — including
+`Multiplayer` — to the text being embedded. So the vector was being pushed
+toward multiplayer at the moment the user asked to play alone. Same shape for
+"like resident evil but nothing scary", which excluded `Horror` in SQL while
+embedding it.
+
+**What fixed it.** `wants_singleplayer()` in `query_parser.py` beside
+`wants_popular()` — EN and DE, negation-guarded, and it *fills* rather than
+overrides — plus `_contradicts_filters()` in `title_lookup.py` so borrowed tags
+cannot fight `excluded_tags` or the multiplayer flag. The prompt was not
+touched. Reported query now returns Ravenfield, Call of Juarez: Gunslinger and
+SUPERHOT, with zero of the top ten carrying a multiplayer category.
+
+Consequences: nothing in the repo could have caught this — there was no
+singleplayer case in `compare_parsers.py` *or* `queries.yaml`. Both new cases
+are now in `compare_parsers.py`. And the before/after `run_eval --parse` turned
+up something separate: exactly one query moved, one my change provably cannot
+reach, which means **the parser is deterministic within a run but not across
+runs** at temperature 0. `--parse` has a reproducibility floor of its own, at
+least one query wide. See failures.md #32.
+
+---
+
 ## 2026-09-06 — The eval cannot tell 2.3 points from nothing
 
 **What broke.** Arctic looked like it needed `rrf w=0.10` rather than the shipped

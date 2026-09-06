@@ -110,6 +110,48 @@ def wants_popular(query: str) -> bool:
     return _POPULAR.search(query) is not None
 
 
+# Same reasoning as _POPULAR, from a different direction: `multiplayer` IS in
+# the prompt and the model usually fills it, but it falls off the end of a long
+# query. Measured at temperature 0 - "call of duty like game, single player",
+# "... under 20 dollars, single player" and "... also popular, single player"
+# all give False, while "call of duty like game, but not including itself, also
+# popular, single player" gives None. Move "single player" earlier in that same
+# sentence and it comes back. Four competing clauses is the trigger, not any
+# one of them. See failures.md #32.
+#
+# The prompt is NOT the place to fix that. It is full, and three separate edits
+# have each silently destroyed a working filter (failures.md #13, #22).
+_SINGLEPLAYER = re.compile(
+    r"\b(?:single[-\s]?player|solo|singleplayer|einzelspieler|allein\w*)\b"
+    r"|\bplay(?:ing)?\s+(?:alone|by\s+myself|on\s+my\s+own)\b"
+    r"|\bf(?:ü|ue)r\s+einen\s+spieler\b",
+    re.IGNORECASE,
+)
+
+# "not single player", "kein Einzelspieler", "no solo". Without this the regex
+# reads a negation as a request and inverts the filter, which is worse than the
+# bug it fixes: a missing filter returns too much, a backwards one returns
+# confidently wrong results. Mirrors title_lookup._EXCLUDERS.
+_NOT_SINGLEPLAYER = re.compile(
+    r"\b(?:not|no|non|without|except|excluding|kein\w*|nicht)\b\W+(?:\w+\W+){0,2}?"
+    r"(?:single[-\s]?player|solo|singleplayer|einzelspieler|allein\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def wants_singleplayer(query: str) -> bool:
+    """True when the query explicitly asks to play alone.
+
+    Deliberately one-directional. There is no `wants_multiplayer()`: the model
+    handles co-op and versus correctly in every probe, and a `True` regex is the
+    riskier half - "no multiplayer" contains "multiplayer", so it would need the
+    same negation guard to buy a fix for a failure never observed.
+    """
+    if _NOT_SINGLEPLAYER.search(query):
+        return False
+    return _SINGLEPLAYER.search(query) is not None
+
+
 # Fields the model must never fill. They are derived in code from the
 # referenced-game lookup, and the model has no way to know a real app_id -
 # left in the schema it invents plausible integers, and a wrong one silently
@@ -232,4 +274,15 @@ def _apply_code_rules(parsed: ParsedQuery, text: str) -> ParsedQuery:
         parsed.min_reviews = settings.popular_min_reviews
         logger.info("query asks for popular, min_reviews=%d", parsed.min_reviews)
 
+    # Fills, never overrides - the same shape as the rule above. The model was
+    # only ever observed returning NO value here, not a wrong one, and an
+    # override would break a mixed ask like "single player or co-op" that the
+    # model reads correctly.
+    if parsed.multiplayer is None and wants_singleplayer(text):
+        parsed.multiplayer = False
+        logger.info("query asks to play alone, multiplayer=False")
+
+    # Last, and after the rules above on purpose: it reads parsed.multiplayer
+    # and parsed.excluded_tags to decide which of the referenced game's tags it
+    # is allowed to borrow.
     return apply_reference(parsed, text)

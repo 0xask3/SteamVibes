@@ -1202,3 +1202,122 @@ number I had not checked was real. The finer sweep was run to locate a cliff
 precisely and instead showed the cliff was inside the noise - which is the same
 lesson as #26 through #30, arriving for the fifth time. The measurement keeps
 being the thing that needs measuring.
+
+---
+
+### 32. "single player" was parsed away, and the reference tags argued with the filters (2026-09-06)
+
+**Reported.** `call of duty like game, but not including itself, also popular,
+single player` returned **Counter-Strike** at rank 1. Two independent defects,
+both in the parser path. Neither was in the ranking, which is where I would have
+looked first if the `filters:` line had not printed the answer.
+
+**Defect 1: the filter was never applied.** The CLI printed `filters: >= 1,000
+reviews  not Call of Duty®` and nothing else. The model returned
+`multiplayer=None`, so `_apply_filters` added no `NOT EXISTS` clause and every
+multiplayer shooter in the corpus stayed eligible.
+
+It is not a general singleplayer failure. Measured at temperature 0, so these
+are deterministic, not samples:
+
+| query | `multiplayer` |
+| --- | --- |
+| `single player shooter` / `solo shooter` / `shooter to play alone` | `False` |
+| `call of duty like game, single player` | `False` |
+| `call of duty like game, under 20 dollars, single player` | `False` |
+| `call of duty like game, on linux, single player` | `False` |
+| `... but not including itself, single player` | `False` |
+| `... also popular, single player` | `False` |
+| **`... but not including itself, also popular, single player`** | **`None`** |
+| `... single player, but not including itself, also popular` | `False` |
+
+Every clause individually is fine. All four together, with "single player" last,
+is not - and moving it earlier in the *same* sentence brings the filter back.
+This is #13 and #22 for the third and fourth time: **the prompt is full**, and
+what falls off is whatever the query mentions last.
+
+**Defect 2: `apply_reference` borrowed tags that contradict the filters.** It
+appends the referenced game's top 6 tags to `semantic_query` and did so with no
+regard for what had just been extracted:
+
+| query | the WHERE clause | the text being embedded |
+| --- | --- | --- |
+| `like stardew valley but not multiplayer` | `multiplayer=False` | `Multiplayer` |
+| `like resident evil but nothing scary` | exclude `Horror` | `Horror, Survival Horror` |
+| `like elden ring but not difficult` | exclude `Difficult` | `Difficult` |
+| the reported query | (should be) `multiplayer=False` | `Multiplayer` |
+
+So SQL deleted a category while the vector hunted for it. The reference game's
+tags describe *the game*; they are not the *request*, and nothing was checking
+the difference.
+
+**Isolating them.** Hand-built `ParsedQuery`, so the parser is out of the loop:
+
+```
+A  as shipped            1. Counter-Strike  4. Enlisted  5. WARMODE  6. Arma 3  8. Verdun
+B  + multiplayer=False   1. Ravenfield  2. Call of Juarez: Gunslinger  8. System Shock
+C  + drop borrowed tag   1. Ravenfield  2. HOLE  4. Deadlink  6. SUPERHOT
+```
+
+Defect 1 is the whole reported bug - B is what evicts every multiplayer title.
+Defect 2 only reshuffles ranks. Worth fixing because it is indefensible, not
+because it was expensive.
+
+**Fix.** Both in code, and the prompt was not touched:
+
+- `wants_singleplayer()` in `query_parser.py`, beside `wants_popular()`. EN and
+  DE, negation-guarded so "not single player" and "kein Einzelspieler" do not
+  invert the filter - a missing filter returns too much, a backwards one returns
+  confidently wrong results. It **fills only, never overrides**: the model was
+  observed returning no value, never a wrong one, and an override would break a
+  mixed ask like "single player or co-op" that the model reads correctly. No
+  `wants_multiplayer()` - "no multiplayer" contains "multiplayer", so the `True`
+  direction is the riskier half for a failure never observed.
+- `_contradicts_filters()` in `title_lookup.py`, filtering `borrowed` against
+  `excluded_tags` and the multiplayer axis before it is appended.
+
+**What this does NOT fix.** Two things, stated rather than papered over:
+
+1. `_contradicts_filters` is **exact match**. Excluding `Horror` still borrows
+   `Survival Horror`; excluding `Fantasy` still borrows `Dark Fantasy`. A
+   substring rule would catch those and would also make an excluded `Action`
+   drop `Action RPG` and `Action Roguelike`, which is a much larger behaviour
+   change than this bug justifies.
+2. **The prompt is still full.** This is a net under the defect, not a repair.
+   Every field in `ParsedQuery` is exposed the same way, and the next one added
+   will be exposed again. The durable fix is splitting the parse into two calls,
+   which is a change worth its own measurement.
+
+**The part that should have caught this.** Nothing did, because nothing could:
+there was no singleplayer or solo case anywhere in `compare_parsers.py` **or**
+`queries.yaml`. The reported query is now in `compare_parsers.py` alongside the
+Resident Evil contradiction, for the same reason the four-constraint query was
+added after a prompt edit destroyed platform extraction - a harness cannot catch
+a regression it never exercises.
+
+`queries.yaml` was deliberately **not** extended. Adding queries invalidates
+every recall number measured on the current set (see #29), and this defect is
+not a recall problem: `run_eval`'s shipped numbers come from the path *without*
+`--parse`, so they cannot see a parser change at all.
+
+**And the regression check found something else.** `run_eval --parse` before and
+after: 53.7% -> 54.1% overall, below the ~1-point floor at n=118. But `specific`
+and `tail` were *identical* and exactly one query moved - `Aufbauspiel mit
+Automatisierung`, 0% -> 50%.
+
+That query cannot be touched by either fix, and the gates are independent:
+`wants_singleplayer()` returns False on it, its `reference_game` is None so
+`apply_reference` returns before the new filter runs at all, and its
+`excluded_tags` are empty. So the difference came from somewhere else - and it
+did. Parsed five times in a row it gives `['Base-Building', 'Automation']` every
+time, and searched three times with those tags it scores 50% every time, finding
+Factorio. The baseline run scored 0%, so **the baseline parsed different tags**.
+
+**The parser is deterministic within a run and not across runs**, at
+`temperature=0`, on the same model and the same query. #31 measured a
+reproducibility floor for the embedding path and found the vectors were the
+non-deterministic part; this is the same lesson one layer up. So
+`run_eval --parse` has a floor of its own, it is at least one query wide, and a
+`--parse` difference of one query is not evidence of anything. Worth knowing
+before someone reads a 0.4-point parser "improvement" as a result - which is
+exactly what this entry would have said if I had not checked which query moved.
