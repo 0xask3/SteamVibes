@@ -1073,3 +1073,72 @@ no-tail-cost weight is 0.10, not qwen3's 0.20 - it loses 2.3 tail points at 0.20
 on 44 queries, and lost 4.6 on 22. The optimal weight is model-dependent even
 under RRF, which is rank-based and was adopted partly because it was expected not
 to be. Acting on that is a search-ranking change and belongs in plan mode.
+
+### 30. Arctic wins, and #25's crossover story was an artifact of its instrument (2026-09-06)
+
+#29 left the model choice open because the eval was too small to settle it.
+Doubled to 118 queries and run on both models, same grid, same index settings,
+same day, it settles:
+
+| @ rrf w=0.20 | qwen3 | arctic | delta |
+| --- | --- | --- | --- |
+| core (30) | **25.0%** | 17.8% | -7.2 |
+| specific (44) | 63.6% | **79.5%** | **+15.9** |
+| tail (44) | 63.6% | **72.7%** | **+9.1** |
+| EN (91) | 57.1% | **66.8%** | +9.7 |
+| DE (27) | 42.6% | 42.6% | 0.0 |
+| overall | 53.8% | **61.3%** | **+7.5** |
+| median revs / under 1k | 132 / 74% | 137 / 75% | - |
+
+One query is 0.85 points at n=118, so +7.5 overall is about nine queries and
++15.9 on `specific` is seven - against the two or three that the 74-query set had
+been about to decide it on. It holds at `w=none` too (58.1 against 50.4), so it
+is retrieval quality rather than an interaction with the popularity term, and
+the counter-metric is unchanged, so arctic is not buying recall by deleting the
+tail. **Ship arctic.**
+
+**#25's crossover was an artifact.** That entry measured the three models while
+raising `REVIEW_THRESHOLD` and concluded "qwen3 wins below ~1,000 reviews, arctic
+wins above it by 19 points," shipping qwen3 because threshold 10 is what ships.
+Raising the threshold *deletes rows from the corpus*, which is not the same
+experiment as *asking for an obscure game*. The `tail` tier asks directly - 44
+queries whose right answer has 30-300 reviews - and arctic wins it by 9.1 points
+at w=0.20 and 11.4 at w=none. There was never a regime where qwen3 was better at
+finding obscure games; there was a regime where the corpus had been cut down to
+1,702 rows and the two models were being scored on 30 queries about famous ones.
+The instrument, not the model, produced the crossover.
+
+Worth stating because #25 was careful, reported the whole curve rather than one
+number, reproduced every figure in a second pass, and was still wrong about what
+the curve meant. Running more conditions does not help when all of them are the
+wrong measurement; only a different measurement does.
+
+**Arctic's gain is English-only, on the tier where it is largest.** Per tier and
+language at w=0.20:
+
+| tier | qwen3 EN / DE | arctic EN / DE |
+| --- | --- | --- |
+| core | 25.0 / 25.0 | 19.2 / 15.0 |
+| specific | 65.7 / 55.6 | 85.7 / 55.6 |
+| tail | 66.7 / 50.0 | 75.0 / 62.5 |
+
+`specific` English goes 65.7 -> 85.7 while German sits at 55.6 for both models -
+the same 5 of 9. n=9 is small enough that the exact tie is luck, but the shape is
+not: swapping to the model whose selling point is multilingual retrieval bought
+20 points of English and nothing German. German remains the weak spot and is not
+a model problem. That points at `embed_text`, which is English, rather than at
+the encoder - the next thing worth trying is a German-language document field or
+query translation, not a fourth model.
+
+**qwen3 wins `core` alone**, by 7.2 points, and that is the tier CLAUDE.md
+already documents as understating quality: arctic returns Cities: Skylines II and
+Roguebook for "city builder" and "deckbuilding roguelike", both correct, both
+unlisted, both scoring zero. It also returns a 44-review 50%-positive "Megacity
+Builder", which is a real defect. Both things are true and `core` cannot separate
+them, which is why it does not decide this.
+
+**Open, and needing plan mode:** arctic's largest no-tail-cost weight is 0.10,
+not 0.20 - `tail` is 75.0% at w<=0.10 and 72.7% at 0.20. By the rule in
+CLAUDE.md, which picks the weight from `tail` and the counter-metric, arctic
+should ship at 0.10. That is a search-ranking change and does not belong in this
+commit.

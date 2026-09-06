@@ -4,6 +4,41 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-06 — Arctic wins, and the reason qwen3 was picked was an artifact
+
+**What broke.** Nothing today — what broke was a conclusion from two days ago.
+failures.md #25 measured three embedding models across `REVIEW_THRESHOLD` and
+found a crossover: qwen3 ahead below ~1,000 reviews, arctic ahead above it by 19
+points. qwen3 shipped because threshold 10 is what ships. That reasoning was
+wrong, and it took building a different instrument to see it.
+
+**What I tried.** Ran both models over the doubled 118-query set, same grid, same
+index settings. Arctic wins by 7.5 points overall, 15.9 on `specific`, 9.1 on
+`tail`, with the counter-metric unchanged — so it is not buying recall by
+deleting the long tail. It wins at `w=none` too, so it is not an interaction with
+the popularity term either.
+
+**What fixed it.** Realising what #25 actually measured. Raising
+`REVIEW_THRESHOLD` deletes rows from the corpus; it does not ask for an obscure
+game. Those are different experiments and I had treated them as one. The `tail`
+tier asks directly — 44 queries whose right answer has 30-300 reviews — and
+arctic wins there by 9.1 points. There was never a regime where qwen3 found
+obscure games better; there was a regime where the corpus had been cut to 1,702
+rows and both models were scored on 30 queries about famous ones.
+
+#25 was careful. It reported the whole curve instead of one number, reproduced
+every figure in a second pass after finding its own verification unsound, and
+was still wrong about what the curve meant. More conditions do not rescue the
+wrong measurement — only a different measurement does. Every correction this
+week has had that shape: #26 the ground truth, #27 the fix for the ground truth,
+#29 the language split, and now #25's threshold curve. The ranker has been fine
+throughout. What kept being broken was what I was holding up to it.
+
+One more thing worth keeping, because it cost 26 minutes: the corpus is on qwen3
+right now, so shipping arctic needs a third re-embed. Ordering matters when each
+measurement costs half an hour — measure the incumbent last and you have to pay
+again to get back to the winner.
+
 ## 2026-09-06 — Doubled the eval, and it took back two of my claims
 
 **What broke.** The arctic-vs-qwen3 result was split — arctic +13.7 on

@@ -299,7 +299,7 @@ than requested (measured 4 of 10 at `--threshold 5000`). It costs latency —
 ~150ms at threshold 10, ~1450ms at 5000. Watch this when Weekend 2 stacks
 filters.
 
-Failure modes: `backend/eval/failures.md`, 29 documented with mechanisms. That
+Failure modes: `backend/eval/failures.md`, 30 documented with mechanisms. That
 file is the raw material for `eval/queries.yaml` and for the README's "what
 does not work" section.
 
@@ -341,27 +341,37 @@ failures.md #29.
 
 Weekend 2 COMPLETE: parser, API and React with editable filter chips all done.
 
-Weekend 3 in progress. The embedding model is `qwen3-embedding:0.6b`, picked by
-measurement over `snowflake-arctic-embed2` and `bge-m3` — **not** bge-m3, which
-this file used to name as the target on the strength of its MIRACL score and
-which came last or joint-last at four of five review thresholds. Query/document
+Weekend 3 in progress. The embedding model is **`snowflake-arctic-embed2`**,
+picked by measurement over `qwen3-embedding:0.6b` and `bge-m3` on 118 labelled
+queries. It is NOT bge-m3, which this file once named as the target on the
+strength of its MIRACL score and which came last or joint-last at four of five
+review thresholds. Query/document
 prefixes are keyed on the model name in `app/embedding.py`, which also lands the
 nomic prefixes failures.md #19 wanted.
 
-The re-measure that #25 said was due HAS NOW RUN, and did not settle it. **The
-corpus is currently embedded with `snowflake-arctic-embed2` and `.env` points at
-it** - that is the live state, not a decision. On the old 74-query set arctic
-was ahead on `specific` by 13.7 points, behind on `core` by 7.2, and level on
-`tail`, German and the counter-metric: a split verdict resting on two or three
-queries per tier. The eval was doubled to 118 instead of shipping on that, which
-invalidated the qwen3 baseline it would have been compared against.
+Arctic beats qwen3 by 7.5 recall points overall at `rrf w=0.20`, 15.9 on
+`specific` and 9.1 on `tail`, with the tail-cost counter-metric unchanged (74%
+against 75% under 1k) - so it is not buying recall by deleting the long tail. It
+wins at `w=none` too, so it is retrieval quality rather than an interaction with
+the ranking term. qwen3 wins `core` alone by 7.2, and that is the tier this file
+already documents as understating quality.
 
-To finish: re-embed qwen3 (`alembic downgrade 0006`, flip EMBED_MODEL,
-`embed_all --reload`, `alembic upgrade head`, ~30 min) and run all 118. Until
-then no model claim in this file is current. Arctic's `core` weakness is partly
-real and partly the tier's incomplete ground truth - it returns Cities: Skylines
-II and Roguebook, which are correct and unlisted, alongside a 44-review
-50%-positive "Megacity Builder", which is not.
+**#25's threshold crossover was an artifact and its conclusion is withdrawn.**
+Raising `REVIEW_THRESHOLD` deletes rows from the corpus; it does not ask for an
+obscure game. The `tail` tier asks directly and arctic wins it. Do not use a
+threshold sweep as a proxy for long-tail retrieval again - that is what `tail` is
+for. See failures.md #30.
+
+**CAVEAT, live state: the corpus is embedded with `qwen3-embedding:0.6b` right
+now**, because it was measured second. Shipping the decision above needs one more
+`--reload` (~30 min): `alembic downgrade 0006`, set `EMBED_MODEL`,
+`embed_all --reload`, `alembic upgrade head`. Measure the incumbent first next
+time, or pay for the round trip.
+
+German is NOT a model problem. Arctic's `specific` gain is entirely English -
+65.7 -> 85.7 while German sits at 55.6% for both models - so swapping to the
+multilingual model bought 20 English points and zero German ones. The next thing
+to try is a German document field or query translation, not a fourth model.
 
 Ranking: `rrf w=0.20` over a 200-candidate pool. recall@10 is 25.0 / 26.7 /
 30.0 / 41.1 / 42.2% across the five thresholds, from 18.3 / 22.8 / 26.7 / 38.3 /
