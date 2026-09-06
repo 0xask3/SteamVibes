@@ -927,3 +927,80 @@ weight, and this file has no basis for a weight above 0.20.
 Fifth falsified hypothesis (#19, #20, #25, #26), and the second running where
 the metric rather than the idea was wrong. #26 caught the ground truth being
 biased; #27 is the fix for that bias having the same bias.
+
+### 28. A long-tail tier that works, and the half of the fix that did nothing (2026-09-06)
+
+#27 ended with "there is no genuine long-tail tier" and named two mistakes to
+fix. Both were fixed. Only one of them mattered, and it was not the one the
+write-up spent most of its words on.
+
+**The tier.** 22 new queries, `tier: tail`, targets sampled by the rewritten
+`sample_longtail.sql` at 30-300 reviews. Where `specific`'s targets sit at the
+97th percentile of the searchable corpus, these sit at the 37th-75th, median
+57th. Swept over the same grid as #27:
+
+| w | core (30) | specific (22) | **tail (22)** | median revs | under 1k |
+| --- | --- | --- | --- | --- | --- |
+| none | 18.3% | 54.5% | **63.6%** | 65 | 81% |
+| 0.05 | 18.3% | 54.5% | **63.6%** | 70 | 80% |
+| 0.10 | 18.3% | 54.5% | **63.6%** | 79 | 78% |
+| 0.20 | 25.0% | 54.5% | **63.6%** | 138 | 73% |
+| 0.40 | 26.7% | 59.1% | **59.1%** | 395 | 63% |
+| 1.00 | 31.1% | 68.2% | **36.4%** | 3,306 | 28% |
+| 2.00 | 35.6% | 68.2% | **9.1%** | 8,219 | 8% |
+
+This is the shape the ranking plan named in advance and #26 asked for: flat,
+then a peak, then collapse. Overall recall peaks at w=0.40 and falls, instead of
+climbing to the end of the sweep. `specific` rises 54.5 -> 68.2 across the same
+sweep that takes `tail` from 63.6 to 9.1 - same query style, same
+one-right-answer construction, same author, same afternoon. The only variable
+that differs between the two tiers is target popularity, which makes this a
+controlled result rather than another guess.
+
+**The weight, on direct evidence at last.** w=0.20 is the largest weight that
+costs the tail literally nothing: 63.6% at w=none and 63.6% at w=0.20, while
+core gains 6.7 points. w=0.40 buys 1.7 more core points for 4.5 tail points, and
+it is downhill from there. #27 justified 0.20 as the knee of a marginal-cost
+curve computed against an unlabelled proxy; it is now the last setting before
+measured harm begins. Same number, third and best reason.
+
+**The half that did nothing.** #27 blamed two things: a sampler that ordered
+`DISTINCT ON` groups by `total_reviews DESC`, and queries written while reading
+`short_description`, which is inside `embed_text`. The fix for the second was to
+write "in the words a player would use six months after finishing the game."
+Measured afterwards rather than assumed:
+
+- Content-word overlap with the target's own `embed_text`: **37% mean in both
+  tiers.** Identical. The German queries score 0% only because `embed_text` is
+  English, so the English tail queries are in fact worse than the average says.
+- Pure-cosine rank of the target: **9 of 22 tail targets at rank 1**, against
+  `specific`'s 7 of 22. Median rank 4.0 against 5.5. By the metric #27 used to
+  explain why `specific` could not price a weight, the new tier is *more*
+  contaminated.
+
+The tier still works, so the explanation in #27 was incomplete. Cosine rank was
+never the whole mechanism. RRF scores `1/(k+r_cos) + w/(k+r_pop)`, and the
+`specific` targets are at rank 1 on cosine *and* near the top on reviews, so the
+weight pays them twice; a tail target at cosine rank 1 with 60 reviews is at the
+bottom of `r_pop`, and the identical term pushes it down. **Target obscurity
+prices the weight. Query prose does not.** The discipline that matters lives in
+the sampler, not in the writing - which is the opposite of where the effort went.
+
+Worth keeping for its own sake: the fix had two parts, one plausible and one
+mechanical, and they were only separable because each was measured on its own.
+Shipped together and called a success, the prose rule would have been recorded
+as the thing that worked and repeated on the next tier.
+
+**Not fixed, deliberately.** Four tail targets are outside the top 200 under
+pure cosine, so they score zero at every weight and carry no information about
+ranking. Dropping them would raise the tier's headline from 63.6% and would be
+exactly the target-selection bias this entry is about, so they stay. Absolute
+recall in this tier is not a quality number; only its slope is evidence.
+
+Also worth stating: the counter-metric moved when the query set grew (median
+returned at w=0.20 was 165 over 52 queries and is 138 over 74). It is comparable
+only within a fixed query set - it prices ranking configs against each other,
+never one query set against another.
+
+Sixth falsified hypothesis (#19, #20, #25, #26, #27), and the first one where
+the headline fix succeeded while the reasoning behind half of it was wrong.

@@ -4,6 +4,36 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-06 — The long tail tier works, and half of the fix was theatre
+
+**What broke.** Nothing, this time — which is why it is worth writing down. The
+tier built this morning does what it was built for: `tail` recall is flat at
+63.6% from w=none through w=0.20, falls to 59.1% at 0.40, and collapses to 9.1%
+at w=2.00 while `core` climbs to 35.6%. First honest peak-and-fall in this
+project. What broke is my account of *why* the previous attempt failed.
+
+**What I tried.** The entry above blamed two things and I fixed both: the
+sampler's `ORDER BY total_reviews DESC`, and queries written while reading
+`short_description`, which is inside `embed_text`. The second fix was to write
+"in the words a player would use." Instead of trusting that, I measured it
+against the old tier: content-word overlap with the target's own text is 37% in
+both, and 9 of 22 new targets sit at pure-cosine rank 1 against the old tier's
+7 of 22. By my own stated mechanism the new tier is *more* contaminated. It
+works anyway.
+
+**What fixed it.** The sampler, alone. Cosine rank was never the whole story:
+RRF scores `1/(k+r_cos) + w/(k+r_pop)`, so a rank-1 target that is also famous
+gains on both terms, while a rank-1 target with 60 reviews sits at the bottom of
+`r_pop` and the same weight pushes it down. Target obscurity prices the weight;
+query prose does not. `rrf w=0.20` holds — now because it is the last setting
+that costs the tail nothing, not because it is a corner on a proxy curve.
+
+The lesson is about the shape of the fix rather than the ranker. I shipped two
+changes, one mechanical and one that merely sounded disciplined, and measured
+them separately almost by accident. Together they would have been recorded as a
+success and the useless half repeated on the next tier. Measure the parts of a
+fix apart, or you learn the wrong rule from a real win.
+
 ## 2026-09-06 — The long-tail eval tier was the 97th percentile
 
 **What broke.** NOTES 2026-09-05 ended needing labelled queries with obscure

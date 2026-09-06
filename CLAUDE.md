@@ -163,18 +163,26 @@ Two categories, and I'll say which one we're in at the top of each session:
   config.py raises if it does, because stage 1 coming up short is silent.
 - `HNSW_EF_SEARCH=200`, not pgvector's default of 40. The default cost 3.3
   recall points at threshold 10 (15.0% against the exact scan's 18.3%) for 8ms.
-- Ranking weight is chosen by the tail-cost counter-metric, NEVER by recall@10.
-  Every labelled target in `queries.yaml` - both tiers - sits above the 93rd
-  percentile of the corpus by review count, so recall rises monotonically with
-  the popularity weight all the way to the end of the sweep. Adding a
-  "long tail" tier was tried as the fix and reproduced the same bias, because
-  the sampler's `ORDER BY total_reviews DESC` returned the top edge of its band
-  (failures.md #27). `run_eval` therefore prints median reviews returned and
-  share under 1k, which need no labels and no query authorship. `rrf w=0.20`
-  buys 0.74 core recall points per point of under-1k share surrendered against
-  0.17 for the next step up, so it is the knee of the curve. Nothing in the repo
-  justifies a higher weight; if you want one, produce evidence from the
-  counter-metric, not from recall.
+- Ranking weight is chosen by the `tail` tier and the tail-cost counter-metric,
+  NEVER by `core` or `specific` recall. Those two tiers' targets all sit above
+  the 93rd percentile of the corpus by review count, so recall on them rises
+  monotonically with the popularity weight however much tail it deletes - that
+  is the ground truth's bias paid back to itself, not evidence (failures.md
+  #26). The `tail` tier's targets sit at the 37th-75th percentile and behave
+  correctly: flat to w=0.20, then falling. `run_eval` also prints median reviews
+  returned and share under 1k, which need no labels at all.
+  `rrf w=0.20` is the largest weight that costs the tail nothing - 63.6% at
+  w=none and 63.6% at w=0.20, while core gains 6.7 points. w=0.40 buys 1.7 more
+  core points for 4.5 tail points. Nothing in the repo justifies a higher
+  weight; if you want one, produce evidence from `tail`, not from `core`.
+- Target obscurity is what lets an eval tier price a ranking weight. Query
+  wording is not, and it was measured: rewriting queries "in a player's words"
+  left content-word overlap with `embed_text` at 37% in both tiers and put MORE
+  targets at cosine rank 1 than before. RRF pays a famous rank-1 target on both
+  terms and pushes an obscure one down, so what matters is where the target
+  sits in the corpus, not how the query reads. New tiers come from
+  `sample_longtail.sql`; check its percentile column before writing a word. See
+  failures.md #28.
 - Commit per feature, not per session.
 - When something breaks, three lines in `NOTES.md`: what broke, what I
   tried, what fixed it.
@@ -262,16 +270,18 @@ than requested (measured 4 of 10 at `--threshold 5000`). It costs latency —
 ~150ms at threshold 10, ~1450ms at 5000. Watch this when Weekend 2 stacks
 filters.
 
-Failure modes: `backend/eval/failures.md`, 27 documented with mechanisms. That
+Failure modes: `backend/eval/failures.md`, 28 documented with mechanisms. That
 file is the raw material for `eval/queries.yaml` and for the README's "what
 does not work" section.
 
-Eval: 52 labelled queries, split `core` (30, short genre labels answered by
-famous games) and `specific` (22, detailed descriptions with one right answer).
-The two tiers are not comparable to each other - core recall understates quality
-because a correct-but-unlisted answer scores zero. Compare a tier against itself
-across configs. `run_eval` also prints the tail-cost counter-metric; read that
-before believing any ranking number.
+Eval: 74 labelled queries in three tiers - `core` (30, short genre labels
+answered by famous games), `specific` (22, detailed descriptions with one right
+answer above the 93rd percentile) and `tail` (22, the same but the answer has
+36-293 reviews). The tiers are NOT comparable to each other: core recall
+understates quality because a correct-but-unlisted answer scores zero, and tail
+recall includes four targets pure cosine cannot retrieve at all, left in
+deliberately. Compare a tier against itself across configs, and read `tail` plus
+the tail-cost counter-metric before believing any ranking number.
 
 ## Carry into Weekend 2 (both cheap, both found by testing)
 1. DONE. Migration `0004` added `required_age` and `games.tags text[]` with a

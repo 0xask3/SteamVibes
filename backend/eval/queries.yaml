@@ -289,3 +289,164 @@
   lang: de
   tier: specific
   expect: [1289810]                   # Siralim Ultimate
+
+# ------------------------------------------------------------- long tail ----
+# `tier: tail` is what the `specific` block above was supposed to be, and the
+# reason it exists is in that block's header: every `core` and `specific` target
+# sits above the 93rd percentile of the corpus by review count, so recall on
+# them rises with the popularity weight no matter what the weight costs. These
+# 22 targets have 36-293 reviews - the 37th-75th percentile of the SEARCHABLE
+# corpus, median 57th, against `specific`'s 97th. Sampled by
+# sample_longtail.sql after it was fixed to order on md5(app_id) instead of
+# total_reviews DESC. Read that file's header before adding to this list.
+#
+# IT WORKS. Swept at k=60 over a 200-candidate pool:
+#
+#     w       core    specific   tail     median revs   under 1k
+#     none   18.3%      54.5%    63.6%             65        81%
+#     0.10   18.3%      54.5%    63.6%             79        78%
+#     0.20   25.0%      54.5%    63.6%            138        73%
+#     0.40   26.7%      59.1%    59.1%            395        63%
+#     1.00   31.1%      68.2%    36.4%          3,306        28%
+#     2.00   35.6%      68.2%     9.1%          8,219         8%
+#
+# `specific` RISES 54.5 -> 68.2 across the same sweep that takes `tail` from
+# 63.6 to 9.1. Same query style, same one-right-answer construction, same
+# author, same day. The only variable that differs is how popular the targets
+# are, which is what makes this a controlled result rather than a second guess.
+# w=0.20 is the largest weight that costs the tail nothing at all.
+#
+# WHAT ACTUALLY FIXED IT, because it was not what I expected. Two mistakes made
+# the `specific` tier useless (see its header). Only the first was fixed here:
+#
+#   1. FIXED - the sampler. md5 ordering instead of total_reviews DESC, and a
+#      percentile column so the bias is visible before any query gets written.
+#   2. NOT FIXED - writing the query away from the blurb. Measured, not
+#      eyeballed: content-word overlap with the target's own embed_text is 37%
+#      mean in BOTH tiers, and 9 of 22 tail targets sit at pure-cosine rank 1
+#      against `specific`'s 7 of 22. Writing "in a player's words" achieved
+#      nothing measurable. The tier works anyway, because rank was never the
+#      whole mechanism: RRF scores 1/(k+r_cos) + w/(k+r_pop), so a rank-1 target
+#      that is also popular gains on BOTH terms, while a rank-1 target with 60
+#      reviews sits at the bottom of r_pop and the same weight pushes it down.
+#      Target obscurity is what prices the weight. Query prose does not.
+#
+# So the discipline that matters is the sampler, not the writing. Which is worth
+# remembering: the plausible-sounding half of the fix did nothing, and only
+# measuring it apart from the half that worked showed which was which.
+#
+# ABSOLUTE RECALL HERE IS NOT A QUALITY NUMBER - read only the slope against
+# ranking config. Four targets are not in the top 200 under pure cosine at all;
+# those are retrieval failures and say nothing about a weight. They were LEFT IN
+# rather than dropped, because dropping the queries that score badly is the same
+# target-selection bias in a new coat. See failures.md #28.
+
+- query: arcade game where you play a stray dog barking at people to steal food
+  lang: en
+  tier: tail
+  expect: [762610]                    # Russian Subway Dogs
+
+- query: board game where you fire a laser and bounce it off mirrored pieces
+  lang: en
+  tier: tail
+  expect: [312720]                    # Khet 2.0
+
+- query: golf where you shoot the ball with guns instead of using clubs
+  lang: en
+  tier: tail
+  expect: [951740]                    # Nice Shot! The Gun Golfing Game
+
+- query: programming robot chefs to cook meals on a kitchen assembly line
+  lang: en
+  tier: tail
+  expect: [990900]                    # Neon Noodles
+
+- query: co-op heist board game about robbing a bank one floor at a time
+  lang: en
+  tier: tail
+  expect: [705550]                    # Burgle Bros.
+
+- query: skateboarding tricks on a speedboat in a neon miami setting
+  lang: en
+  tier: tail
+  expect: [761010]                    # Wave Break
+
+- query: silly physics game where your hands are baseball bats
+  lang: en
+  tier: tail
+  expect: [2012100]                   # WHAT THE BAT?
+
+- query: driving a bus while playing as a cat riding a robot vacuum
+  lang: en
+  tier: tail
+  expect: [1851730]                   # Meow Express
+
+- query: peaceful game about catching real world insects and running a bug shop
+  lang: en
+  tier: tail
+  expect: [2265310]                   # Bug & Seek
+
+- query: hidden object game where you search paintings for hidden bees
+  lang: en
+  tier: tail
+  expect: [2625170]                   # I commissioned some bees 13
+
+- query: city builder where the water keeps rising and you build upward
+  lang: en
+  tier: tail
+  expect: [1795470]                   # Flooded
+
+- query: hex grid colony builder about supply chains on a volcanic planet
+  lang: en
+  tier: tail
+  expect: [1090100]                   # Scorchlands
+
+- query: bleak turn based strategy about drilling deep under a dying earth
+  lang: en
+  tier: tail
+  expect: [2924310]                   # Anoxia Station
+
+- query: management game about running a professional road cycling team
+  lang: en
+  tier: tail
+  expect: [1237070]                   # The Cyclist: Tactics
+
+- query: baseball game played entirely in the final inning with dice and cards
+  lang: en
+  tier: tail
+  expect: [705020]                    # Bottom of the 9th
+
+- query: narrative game about first contact in seventeenth century canada
+  lang: en
+  tier: tail
+  expect: [1671740]                   # Two Falls (Nishu Takuatshina)
+
+- query: running a bookshop and taking on cosmic horror investigations
+  lang: en
+  tier: tail
+  expect: [1225820]                   # Hermitage: Strange Case Files
+
+- query: Tamagotchi-artiges Spiel, in dem man einen kleinen Dinosaurier großzieht
+  lang: de
+  tier: tail
+  expect: [1730110]                   # Dinogotchi
+
+- query: Spiel darüber, ein autoritäres Land zu verlassen, bevor man eingezogen wird
+  lang: de
+  tier: tail
+  expect: [2068980]                   # Escape from Grustovia
+
+- query: ruhiges Spiel über ein italienisches Dorf, das für einen Stausee geflutet wurde
+  lang: de
+  tier: tail
+  expect: [1283370]                   # A Painter's Tale: Curon, 1950
+
+- query: Puzzlespiel, das Schachzüge mit dem Schieben von Figuren verbindet
+  lang: de
+  tier: tail
+  expect: [1784220]                   # Chesskoban - Chess Puzzles
+
+- query: Metroidvania über einen Piraten auf einer verfluchten Insel
+  lang: de
+  tier: tail
+  expect: [1933370]                   # Mark of the Deep

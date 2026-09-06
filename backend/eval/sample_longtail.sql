@@ -21,17 +21,22 @@
 -- above 1,000 is the top 8% and is not what this file is for.
 --
 -- HOW TO USE IT
--- 1. Pick the game FIRST, then write the query someone would type wanting it.
+-- 1. CHECK THE PCTILE COLUMN on what you picked. If the median is above ~90 you
+--    are labelling the head again and the tier will be worthless. This is the
+--    rule that does the work - the 22 queries built from this file after the
+--    md5 fix produced the project's first honest peak-and-fall curve, and the
+--    only thing that changed was the sampling. See failures.md #28.
+-- 2. Pick the game FIRST, then write the query someone would type wanting it.
 --    Never the other way round: writing the query first and hunting for a match
 --    selects for games the ranker already returns.
--- 2. Do NOT paraphrase the blurb. `short_description` is part of embed_text, so
---    a near-copy lands the target at cosine rank ~1, where a popularity term is
---    too small to dislodge it - the tier then reports "no harm" by
---    construction, which is exactly how the first attempt failed. Read the
---    blurb, then write the query in the words a player would use six months
---    after finishing the game.
--- 3. Check the pctile column on what you picked. If the median is above ~90,
---    resample; you are labelling the head again.
+-- 3. Prefer not to paraphrase the blurb, but do not believe this buys much.
+--    `short_description` is inside embed_text, so a near-copy lands the target
+--    at cosine rank ~1. Deliberately writing "in a player's words" instead was
+--    measured and changed nothing: 37% content-word overlap either way, and
+--    MORE targets at rank 1 than the contaminated tier it replaced. It works
+--    regardless, because an obscure target at rank 1 is at the bottom of the
+--    popularity ranking and the weight pushes it down, where a famous one gains
+--    twice. Obscurity prices the weight; prose does not.
 --
 --   docker compose exec -T db psql -U steam -d steamvibe -f - \
 --     < backend/eval/sample_longtail.sql

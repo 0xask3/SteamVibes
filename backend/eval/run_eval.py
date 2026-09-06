@@ -47,10 +47,13 @@ class Case:
         self.lang: str = raw.get("lang", "en")
         self.expect: set[int] = set(raw["expect"])
         self.note: str | None = raw.get("from")
-        # "core" is short genre labels answered by famous games; "specific" is
-        # a detailed description with one right answer. Reported apart because
-        # they measure different things - see the queries.yaml header, which
-        # also records why neither tier can price a popularity weight.
+        # Three tiers, measuring three different things. "core" is short genre
+        # labels answered by famous games; "specific" is a detailed description
+        # with one right answer; "tail" is the same but the answer has 36-293
+        # reviews. Only "tail" can see what a ranking change deletes - the other
+        # two are entirely above the 93rd percentile by review count, so recall
+        # on them rises with a popularity weight regardless of its cost. See the
+        # queries.yaml headers.
         self.tier: str = raw.get("tier", "core")
 
     def recall(self, returned: list[int], limit: int) -> tuple[float, set[int]]:
@@ -98,7 +101,7 @@ def main() -> None:
     scores: dict[str, list[float]] = {"en": [], "de": []}
     elapsed: list[float] = []
     misses: list[tuple[Case, set[int]]] = []
-    tiers: dict[str, list[float]] = {"core": [], "specific": []}
+    tiers: dict[str, list[float]] = {"core": [], "specific": [], "tail": []}
     returned_reviews: list[int] = []
 
     mode_label = "parsed" if args.parse else "semantic only"
@@ -139,7 +142,7 @@ def main() -> None:
             misses.append((case, missed))
 
         flag = "  " if recall == 1.0 else ("~ " if recall > 0 else "! ")
-        mark = "*" if case.tier == "specific" else " "
+        mark = {"specific": "*", "tail": "+"}.get(case.tier, " ")
         print(f"{flag}{mark} {case.query[:50]:<52}{case.lang:<6}{recall:>6.0%}")
 
     print("-" * 70)
@@ -155,13 +158,18 @@ def main() -> None:
 
     # NOT comparable to each other. Core queries are short genre labels whose
     # ground truth names 2-3 famous games out of hundreds that would satisfy the
-    # query, so core recall understates quality; "specific" queries have exactly
-    # one right answer by construction. Compare a tier against itself across
-    # configs, never core against specific. Neither tier can price a popularity
-    # weight - every labelled target in this file, both tiers, sits above the
-    # 93rd percentile by review count. That is what the counter-metric below is
-    # for. See the queries.yaml header and failures.md #26.
-    for tier in ("core", "specific"):
+    # query, so core recall understates quality; "specific" and "tail" have
+    # exactly one right answer by construction. Compare a tier against itself
+    # across configs, never one tier against another.
+    #
+    # Read "tail" when judging a ranking change. Core and specific targets are
+    # all above the 93rd percentile by review count, so recall on them rises
+    # with a popularity weight whatever it costs - that is not evidence, it is
+    # the ground truth's bias paid back to itself. "tail" targets sit at the
+    # 37th-75th percentile of the searchable corpus, so a weight that buries the
+    # long tail shows up here as a fall. Its absolute value is not a quality
+    # number; only its slope is. See failures.md #26-28.
+    for tier in ("core", "specific", "tail"):
         if tiers[tier]:
             row(f"{tier}, n={len(tiers[tier])}", tiers[tier])
 
