@@ -4,6 +4,72 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-05 — The eval wanted a popularity weight that deletes the long tail
+
+**What broke.** Adding a prominence term to ranking worked, and the sweep then
+asked for far too much of it. recall@10 at threshold 10 climbed 18.3% -> 25.0
+-> 28.3 -> 31.1 -> 34.4 -> 35.6% as the weight rose, peaking at `rrf w=2.0`
+(equivalently `log w=1.0`). Taking that number would have been the whole point
+of the exercise, and wrong.
+
+**What I tried.** Two controls, because a metric that only goes up is not
+measuring what you think.
+
+First, rank by popularity *alone* - semantic similarity still selects the
+200-candidate pool but contributes nothing to the ordering. That scores
+**32.2%**, against 35.6% for the best blend and 18.3% for pure similarity. So of
+a 17.3-point gain, 13.9 came from sorting by review count and 3.4 from the
+embedding.
+
+Second, look at the ground truth. All 37 expected app_ids have **>= 11,267
+reviews**, median 84,488, none under 1,000. The labelled set contains no
+long-tail games at all, so recall@10 rises with the popularity weight until the
+corpus is gone. The metric cannot see the cost, so measure the cost directly -
+what the 30 eval queries actually return:
+
+| weight (log) | recall@10 | median reviews returned | results under 1k |
+| --- | --- | --- | --- |
+| 0.00 | 18.3% | 68 | 79% |
+| 0.05 | 25.0% | 192 | 69% |
+| 0.10 | 28.3% | 674 | 54% |
+| 0.20 | 31.1% | 4,715 | 30% |
+| 0.40 | 34.4% | 12,366 | 6% |
+| 1.00 | 35.6% | 17,889 | **1%** |
+
+The eval-optimal weight returns almost nothing under 1,000 reviews. That is
+`REVIEW_THRESHOLD=10000` by another route - the exact trade refused a day
+earlier, arrived at from the other direction and with a better-looking number
+attached.
+
+**What fixed it.** Choosing the weight by the defect it repairs rather than by
+the metric it moves: `rrf w=0.20`, the smallest setting that puts Cities:
+Skylines II above a 27-review asset flip for "city builder" while leaving 70% of
+results in the tail. Costs 10 points of recall against the eval optimum and
+keeps the product.
+
+`rrf` over `log` because at matched tail cost they are equivalent - log 0.05 and
+rrf 0.20 both give 25.0% at ~70% tail; log 0.20 and rrf 1.00 both give 31.1% -
+so the tiebreak is durability. log's weight is calibrated against the model's
+cosine spread (qwen3's top 10 spans 0.752-0.696, arctic's 0.577-0.502); rrf
+reads only ranks and survives a model swap unchanged, which matters while the
+model choice is still provisional.
+
+Final: 25.0 / 26.7 / 30.0 / 41.1 / 42.2% across the five thresholds, against
+18.3 / 22.8 / 26.7 / 38.3 / 38.9 before.
+
+**The real conclusion is that the eval needs long-tail ground truth.** Until it
+has some, no larger weight can be justified from it, and the honest reading of
+35.6% is "this metric rewards popularity", not "ranking improved by 17 points".
+
+**Latency, separately.** `run_eval`'s "median search latency" times the whole
+`search()` call, embedding included, and Ollama's embed time swung between 94ms
+and 834ms after a host restart - which made the ranking look 20x slower than it
+is. Measured apart, query time is 44-85ms at every threshold and an alternating
+A/B put rrf at ~57-60ms against ~40ms unranked. Time the thing you changed, not
+the pipeline containing it.
+
+---
+
 ## 2026-09-04 — The 1024-dim HNSW index is 2x the size and quietly costs recall
 
 **What broke.** Two predictions about migration `0007` were wrong at once. The

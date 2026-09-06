@@ -781,3 +781,66 @@ before every eval. All thirty numbers reproduced exactly, which also confirms
 the `embedding IS NULL` work queue makes an interrupted run indistinguishable
 from a clean one. The verification was genuinely unsound; the results were not.
 Both facts are worth keeping — a check that cannot fail is not a check.
+
+### 26. The ground truth has no long tail, so recall bought one (2026-09-05)
+
+**What was measured.** #24 concluded that ranking needed a continuous
+popularity term rather than the `REVIEW_THRESHOLD` cliff. Built it as a
+two-stage query - HNSW retrieves 200 candidates, stage 2 reranks - with two
+blend methods behind a config flag so the eval could choose. It chose badly, and
+the way it failed is more useful than the feature.
+
+recall@10 at threshold 10, sweeping the weight:
+
+| weight | log | rrf |
+| --- | --- | --- |
+| baseline (none) | 18.3% | 18.3% |
+| low | 25.0% (0.05) | 25.0% (0.20) |
+| mid | 31.1% (0.20) | 31.1% (1.00) |
+| high | 35.6% (1.00) | 35.6% (2.00) |
+
+Nearly double, from a config value. Then the controls.
+
+**Control 1: rank by popularity alone.** Similarity still picks the candidate
+pool but contributes nothing to the ordering. **32.2%** - so 13.9 of the 17.3
+points came from sorting by review count and 3.4 from the embedding. Most of
+the "ranking improvement" is not ranking.
+
+**Control 2: look at the labels.** All 37 expected app_ids have >= 11,267
+reviews, median 84,488, **none under 1,000**. The eval contains no long-tail
+games, so recall can only rise as the weight rises. It is structurally
+incapable of reporting the cost.
+
+**The cost, measured directly** - what the 30 queries return:
+
+| weight (log) | recall@10 | median reviews | under 1k reviews |
+| --- | --- | --- | --- |
+| 0.00 | 18.3% | 68 | 79% |
+| 0.05 | 25.0% | 192 | 69% |
+| 0.10 | 28.3% | 674 | 54% |
+| 0.20 | 31.1% | 4,715 | 30% |
+| 0.40 | 34.4% | 12,366 | 6% |
+| 1.00 | 35.6% | 17,889 | 1% |
+
+At the eval optimum, 1% of results have under 1,000 reviews against 79%
+unweighted. That is search over the Steam top few thousand - the same trade
+#24 refused, reached from the other side and wearing a better number.
+
+**Shipped `rrf w=0.20`**: the smallest weight that fixes the observed defect
+(Cities: Skylines II above a 27-review asset flip for "city builder") while
+leaving 70% of results in the tail. 25.0 / 26.7 / 30.0 / 41.1 / 42.2% across the
+five thresholds. Ten points below the eval optimum, deliberately.
+
+`rrf` over `log` because they are equivalent at matched tail cost - log 0.05
+= rrf 0.20 = 25.0% at ~70%, log 0.20 = rrf 1.00 = 31.1% - so the tiebreak is
+durability: log's weight is calibrated against the model's cosine spread
+(qwen3 0.752-0.696, arctic 0.577-0.502), rrf reads only ranks and survives a
+model swap. The model choice is still provisional (#25), so that is worth
+having.
+
+**What to do about it.** `queries.yaml` needs labelled queries whose answers are
+obscure - "cozy game about running a bookshop" rather than "city builder". Until
+then the harness cannot tell a better ranker from a more popular one, and any
+weight above 0.20 is unjustifiable from evidence this file contains. This is the
+fourth falsified hypothesis here (#19, #20, #25), and the first where the
+*metric* rather than the idea was the thing that was wrong.

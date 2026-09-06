@@ -155,6 +155,21 @@ Two categories, and I'll say which one we're in at the top of each session:
   code as a regex over the query text, the way `wants_popular()` and
   `wants_reference_excluded()` do. The cost is that unphrased variants are
   missed; the alternative has cost a filter every single time.
+- Search ranking is two-stage: HNSW retrieves `RERANK_CANDIDATES` rows by pure
+  cosine distance, then stage 2 reorders them with a popularity term. The blend
+  can never go in the first ORDER BY - pgvector only accelerates
+  `ORDER BY embedding <=> :v`, and any composite expression there silently drops
+  to an exact scan. `RERANK_CANDIDATES` must not exceed `HNSW_EF_SEARCH`;
+  config.py raises if it does, because stage 1 coming up short is silent.
+- `HNSW_EF_SEARCH=200`, not pgvector's default of 40. The default cost 3.3
+  recall points at threshold 10 (15.0% against the exact scan's 18.3%) for 8ms.
+- Ranking weight is chosen by the defect it fixes, NOT by recall@10. All 37
+  ground-truth games in `queries.yaml` have >=11,267 reviews and none under
+  1,000, so recall rises monotonically with the popularity weight until the long
+  tail is gone - at the eval optimum only 1% of returned results have under
+  1,000 reviews, against 79% unweighted. `rrf w=0.20` is the smallest setting
+  that fixes the known failure while keeping 70% of results in the tail. Before
+  raising it, add long-tail labelled queries. See failures.md #26.
 - Commit per feature, not per session.
 - When something breaks, three lines in `NOTES.md`: what broke, what I
   tried, what fixed it.
@@ -269,8 +284,15 @@ prefixes are keyed on the model name in `app/embedding.py`, which also lands the
 nomic prefixes failures.md #19 wanted.
 
 The choice is threshold-dependent and provisional: qwen3 wins below ~1,000
-reviews, arctic wins above it by 19 points. Re-measure the model after ranking
-gains a popularity term (failures.md #24, #25) rather than inheriting it.
+reviews, arctic wins above it by 19 points. Ranking now has the popularity term
+that #24 asked for, so the re-measure it was waiting on is due - one `--reload`
+and one sweep, ~30 min.
+
+Ranking: `rrf w=0.20` over a 200-candidate pool. recall@10 is 25.0 / 26.7 /
+30.0 / 41.1 / 42.2% across the five thresholds, from 18.3 / 22.8 / 26.7 / 38.3 /
+38.9. Query time 44-85ms. `run_eval`'s latency figure includes the embedding
+call, so it is not a query measurement - Ollama swung 94-834ms after a host
+restart and made ranking look 20x slower than it is.
 
 Still worth carrying: trigram title matching for franchise names with
 ™/edition suffixes (failures.md #21).
