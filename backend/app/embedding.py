@@ -232,6 +232,43 @@ def verify_corpus_model() -> None:
     )
 
 
+@cache
+def verify_corpus_complete() -> None:
+    """Refuse to produce a results table from a half-embedded corpus.
+
+    verify_corpus_model() catches the WRONG model. This catches the right model
+    applied to only part of the table, which that check cannot see: during a
+    `--reload` every vector is cleared and refilled over ~25 minutes, and the
+    model column agrees with EMBED_MODEL the whole time. Search runs happily
+    against whatever fraction exists, returning fewer and worse results with no
+    error - the same silent shape as the mismatch, from a different cause.
+
+    Only the eval calls this. A partial corpus is a normal state to search from
+    while ingest is running, and the CLI should stay usable; a recall number
+    measured mid-reload is not merely imprecise, it looks exactly like a model
+    result and would be written into a table as one.
+    """
+    from sqlalchemy import func, select
+
+    from app.db import session_scope
+    from app.models import Game
+
+    with session_scope() as session:
+        pending = session.scalar(
+            select(func.count())
+            .select_from(Game)
+            .where(Game.embed_text.isnot(None), Game.embedding.is_(None))
+        )
+
+    if pending:
+        raise SystemExit(
+            f"{pending:,} games have embed_text but no vector, so the corpus is "
+            "incomplete - probably an embed_all run in progress. Recall measured "
+            "now would be against a fraction of the corpus and would read as a "
+            "config result. Wait for `embed_all` to report 0 pending."
+        )
+
+
 def embed_query(text: str) -> list[float]:
     """Embed a single search query."""
     return embed_texts([text], is_query=True)[0]

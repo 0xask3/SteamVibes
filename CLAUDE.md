@@ -132,6 +132,14 @@ Two categories, and I'll say which one we're in at the top of each session:
   would report the difference as a model result. A half-finished re-embed trips
   it too, which is correct. Deliberately NOT wired into `app/main.py` or
   `app/search.py` - that is a search-path edit and belongs in plan mode.
+- `verify_corpus_complete()` is its sibling and catches what it cannot: the
+  RIGHT model applied to only part of the table. During a `--reload` the model
+  column agrees with `EMBED_MODEL` for the whole ~25 minutes while search runs
+  against whatever fraction exists - fewer and worse results, no error. Only
+  `run_eval` calls it, on purpose: a partial corpus is a normal thing to search
+  from while ingest runs and the CLI should stay usable, but a recall number
+  measured mid-reload is not merely imprecise, it looks exactly like a model
+  result and would be written into a table as one.
 - `uv run alembic check` belongs beside mypy and ruff. It is the only one of
   the three that compares the code against the real database. It caught that
   `ix_games_embedding_hnsw` existed in Postgres but not in `models.py`, which
