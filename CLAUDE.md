@@ -77,6 +77,18 @@ Two categories, and I'll say which one we're in at the top of each session:
 - Tag strings must match exactly: the real tags are `Co-op` and `Base-Building`,
   not `Base Building`. A wrong string returns zero rows with no error, which is
   why the parser is grounded on the real vocabulary.
+- `required_tags` filters with `&&` (any-of), NOT `@>` (all-of). It was `@>` and
+  that cost recall rather than buying precision: 55.4% against any-of's 60.0%
+  over 118 queries, and of the 72 queries that got tags it helped 3 and hurt 11 -
+  all three it helped carried exactly ONE tag. Six queries under-delivered and
+  `running a bookshop and taking on cosmic horror` returned zero rows, because no
+  game in 130,651 carries `Cozy` AND `Horror` AND `Investigation`; 8,544 carry
+  one of them. The tag filter is a coarse recall gate and the vector does the
+  discriminating - it is not there to rank. Co-op and versus intent is unaffected
+  because that travels through `multiplayer` and `game_categories`, not tags.
+  One GIN index serves both operators, so this needed no migration. `@>` is still
+  right for `excluded_tags`, which is already `not_(overlap())` = shares none.
+  See failures.md #33.
 - The query parser is grounded on the real tag vocabulary — all 452 tags, not
   BUILD_PLAN's "top ~200". They cost ~1,400 tokens, and passing every one
   removes a whole failure class: a tag that exists but was never shown.
@@ -87,6 +99,37 @@ Two categories, and I'll say which one we're in at the top of each session:
   earlier one cannot be revised. `semantic_query` must stay LAST: it is the
   query with every extracted constraint removed, so it depends on all the
   others. Declared first, both models returned the original sentence unstripped.
+  That order only holds because `_REQUIRED_FIELDS` exists. An OPTIONAL property
+  is a grammar branch the model may skip, and while every field but
+  `semantic_query` was optional it emitted keys in whatever order it liked -
+  `semantic_query` came out FIRST, which is exactly what declaring it last was
+  meant to prevent. Adding a field to `ParsedQuery` without adding it there
+  silently opts it out of both the ordering and the guarantee below.
+- An optional field in a constrained-decoding schema is an invitation to OMIT it.
+  `format` guarantees the output validates, never that it is complete, and a
+  schema generated from Pydantic is almost entirely optional by accident: a field
+  is required only when it has no default. The model returned `max_price_usd`
+  ABSENT - not null - for "no wars on linux under 30$" while correctly stripping
+  "under 30$" out of `semantic_query`, and absence is indistinguishable
+  downstream from "no price asked for". It dropped `required_tags` on 64% of
+  parses. `_REQUIRED_FIELDS` in `app/query_parser.py` is the fix and every scalar
+  belongs in it. The tag ARRAYS deliberately do NOT: forcing those makes the
+  model invent a tag for a vague query and costs 15.9 points of tail recall.
+  Check what the grammar permits before blaming the prompt - #13, #22 and #32 all
+  reached for prompt saturation, and this mechanism produces the same symptom.
+  See failures.md #33.
+- Making a field REQUIRED can make the model invent a value for it, and that is
+  a different bug from the one you fixed. `platforms` required means the key must
+  appear, and on a query naming no OS the model sometimes fills all three -
+  measured 3/3 on "cheap relaxing puzzle games, nothing scary", 1 of 12 no-OS
+  queries. Platforms are ANDed, so that silently demands Windows AND macOS AND
+  Linux. `_drop_invented_platforms()` guards it, and only fires when the query
+  names no OS, so a genuine "runs on windows, mac and linux" survives and the
+  guard can only widen results. Leaving `platforms` optional is worse and was
+  measured: the key then goes missing on "on linux under 30$". When checking a
+  required-field change for invented values, check EVERY field you made
+  required - the first pass here counted only the scalars and missed the one
+  array. See failures.md #33.
 - The parser prompt's layout is tuned and the two blocks compete. Whatever sits
   nearest the query wins: vocabulary at the bottom and the scalar rules lose
   price/platform/year; vocabulary at the top and tag extraction collapses.
@@ -222,13 +265,16 @@ Two categories, and I'll say which one we're in at the top of each session:
   passes both `verify_corpus_model()` and `verify_corpus_complete()`, because
   one sees a single model name and the other sees no gaps. See failures.md #31.
 - `run_eval --parse` has a SECOND floor on top of that one, and it is the
-  parser. Two runs minutes apart differed by exactly one query, and re-parsing
-  that query five times gave the same tags every time — so the parser is
-  deterministic within a run and not across runs, at `temperature=0`, same model,
-  same text. A one-query `--parse` difference is not evidence. When a `--parse`
-  number moves, diff the per-query lines and prove the change can reach the
-  query that moved before believing it; on the entry that found this, it could
-  not. See failures.md #32.
+  parser, which is deterministic within a run and NOT across runs at
+  `temperature=0` on the same model and text. First measured at one query
+  (#32); then FOUR queries moved between two runs of identical code, which is
+  3.4 points — so treat anything under ~3.5 points on `--parse` as noise, and
+  budget three runs before believing a parser result. Two wrong diagnoses came
+  out of not doing that: a per-query flip was attributed first to a platform
+  guard and then to `semantic_query` over-stripping, and it was neither. When a
+  `--parse` number moves, diff the per-query lines, prove the change can reach
+  the query that moved, and re-run before writing a mechanism down.
+  See failures.md #32 and #33.
 - Ranking weight is chosen by the `tail` tier and the tail-cost counter-metric,
   NEVER by `core` or `specific` recall. Those two tiers' targets all sit above
   the 93rd percentile of the corpus by review count, so recall on them rises
@@ -364,7 +410,23 @@ than requested (measured 4 of 10 at `--threshold 5000`). It costs latency —
 ~150ms at threshold 10, ~1450ms at 5000. Watch this when Weekend 2 stacks
 filters.
 
-Failure modes: `backend/eval/failures.md`, 32 documented with mechanisms. That
+Parsed search (`--parse`, and every request through the API) is measured
+separately from the pure-semantic numbers below, because `run_eval`'s headline
+figures come from the path WITHOUT the parser and cannot see a parser change at
+all. At `rrf w=0.20`, same-session matched runs: overall 60.0% against a
+baseline of 55.8%, `specific` 84.1% against 72.7%, `core` 16.1% against 12.8%,
+`tail` 65.9% against 68.2%. The gain is entirely `specific`; `tail` is down 2.3,
+which is the floor. Parse costs ~1.07s against ~0.56s before, so the API's
+first-search path is ~1.85s - the chip path still does not re-parse and stays at
+0.095s.
+
+The eval CANNOT referee a parser change on its own: 7 of its 118 queries carry
+anything constraint-like and none names a price, platform, year or age, so every
+filter the parser extracts can only shrink the result set. Strip the tag arrays
+out of the schema and `--parse` scores exactly the no-parse baseline. Judge
+constraint extraction with `compare_parsers.py`, not with recall.
+
+Failure modes: `backend/eval/failures.md`, 33 documented with mechanisms. That
 file is the raw material for `eval/queries.yaml` and for the README's "what
 does not work" section.
 

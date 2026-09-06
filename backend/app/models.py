@@ -114,7 +114,10 @@ class Game(Base):
 
     # Denormalised from game_tags, most-voted first. game_tags stays the source
     # of truth because it carries votes; this exists so tag filtering is
-    # `tags @> ARRAY[...]` against a GIN index rather than a join and GROUP BY.
+    # `tags && ARRAY[...]` against a GIN index rather than a join and GROUP BY.
+    # Both required and excluded tags use && now - the required side was @>
+    # (all-of) until that was measured as costing recall, see failures.md #33.
+    # One GIN index serves either operator, so the switch needed no migration.
     # NOT NULL with an empty-array default: NULL would break exclusion filters,
     # since NOT (NULL && ARRAY['Violent']) is NULL rather than true.
     #
@@ -162,7 +165,7 @@ class Game(Base):
         Index("ix_games_list_price_usd", "list_price_usd"),
         Index("ix_games_release_date", "release_date"),
         Index("ix_games_total_reviews", "total_reviews"),
-        # Tag filtering: tags @> ARRAY[...] and NOT tags && ARRAY[...].
+        # Tag filtering: tags && ARRAY[...] and NOT tags && ARRAY[...].
         Index("ix_games_tags_gin", "tags", postgresql_using="gin"),
         # Declared so `alembic check` sees the models and the database agree.
         # Created by migration 0003 and rebuilt by 0005 rather than here -

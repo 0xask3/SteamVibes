@@ -4,6 +4,56 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-07 — The schema let the model skip fields, and the tags were ANDed
+
+**What broke.** `game that feels like call of duty, but no wars on linux under
+30$` extracted the platform and the exclusion but never the price. Suspicion was
+the `$` sign instead of the word "dollars".
+
+**What I tried.** Killed the `$` theory first: every notation parses correctly
+alone (`30$`, `$30`, `30 dollars`, `30 USD`, `30 bucks`) and every notation fails
+inside the full query, so it is neither the symbol nor the wording. Then read the
+RAW model output instead of the validated `ParsedQuery`, which is what actually
+showed it — `max_price_usd` was **absent**, not null, and `semantic_query` was
+emitted FIRST. `_llm_schema()` had `required: ['semantic_query']`, because
+Pydantic only marks a field required when it has no default. Ollama's `format`
+turns an optional property into a grammar branch the model can skip, so any
+filter could silently vanish, and absence reads downstream as "not requested".
+Measured the blast radius: `required_tags` dropped on 64% of parses.
+
+Forcing every field fixed extraction and made recall *worse* (46.5% against
+54.1%), which turned out to be a second, hidden defect: `required_tags` was ANDed
+via `tags @>`. Over 118 queries it helped 3 and hurt 11, six queries
+under-delivered, and "running a bookshop and taking on cosmic horror" returned
+zero rows — nothing carries `Cozy` AND `Horror` AND `Investigation`. With `&&`,
+8,544 games do.
+
+**What fixed it.** `_REQUIRED_FIELDS` in `query_parser.py` (the scalars plus
+`platforms` and `semantic_query`; the tag arrays stay optional, since forcing
+those costs 15.9 points of tail) and `Game.tags.contains()` → `.overlap()` in
+`_apply_filters`. One GIN index serves both operators, so no migration.
+
+Requiring `platforms` then created a third defect — on a query naming no OS the
+model sometimes fills all three, and platforms are ANDed, so it silently demands
+Windows AND macOS AND Linux. Guarded in `_drop_invented_platforms()`. My first
+check for invented constraints missed it because I only counted the scalar
+fields and never looked at the one array in the required set.
+
+Consequences: parse goes 0.56s → 1.07s, purely output tokens, so the API's
+first-search path goes ~1.35s → ~1.85s (chip edits still do not re-parse).
+Result is +4.2 overall against a same-session baseline (55.8% → 60.0%), carried
+entirely by `specific` (+11.4); `tail` is down 2.3, at the floor. And the eval
+could not have refereed this on its own — only 7 of 118 queries carry any
+constraint and none names a price, platform, year or age, so `--parse` scores how
+little the parser does rather than how well it parses.
+
+The `--parse` reproducibility floor is also wider than #32 said: four queries
+moved between two runs of identical code, which is 3.4 points. Two wrong
+diagnoses came out of chasing them before I re-ran and watched them move on their
+own. See failures.md #33.
+
+---
+
 ## 2026-09-06 — "single player" parsed away, and the reference tags argued back
 
 **What broke.** `call of duty like game, but not including itself, also popular,

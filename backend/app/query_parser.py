@@ -158,18 +158,52 @@ def wants_singleplayer(query: str) -> bool:
 # removes a real result. Stripping them also saves generation tokens.
 _CODE_ONLY_FIELDS = ("reference_game", "excluded_app_ids", "min_reviews")
 
+# Fields the model MUST emit a key for, even if that key is null.
+#
+# Pydantic marks a field optional whenever it has a default, so every field here
+# but semantic_query was optional - and Ollama's `format` compiles an optional
+# property into a grammar branch the model may simply skip. It did: asked for
+# "...no wars on linux under 30$" it returned max_price_usd ABSENT, not null,
+# while correctly stripping "under 30$" out of semantic_query. Absent and "no
+# price requested" are the same thing downstream, so the filter vanished with no
+# error. Across the compare_parsers set the shipped schema dropped required_tags
+# on 64% of parses. See failures.md #33.
+#
+# Listing them here also restores the field ORDER CLAUDE.md depends on. Optional
+# properties let the model emit keys in any order, and it put semantic_query
+# FIRST - the exact thing declaring it last was meant to prevent.
+#
+# required_tags and excluded_tags are deliberately NOT here. Forcing the arrays
+# too costs 15.9 points of tail recall (47.7% against 63.6%): a tag the model
+# invents for a vague query becomes a filter, and long-tail games are the least
+# likely to carry it. They stay optional so the model can decline.
+_REQUIRED_FIELDS = (
+    "max_price_usd",
+    "min_price_usd",
+    "platforms",
+    "released_after",
+    "multiplayer",
+    "max_required_age",
+    "semantic_query",
+)
+
 
 @lru_cache(maxsize=1)
 def _llm_schema() -> dict[str, Any]:
     """ParsedQuery's JSON schema, minus the code-only fields.
 
-    Neither is in `required` - both carry defaults - so removing the properties
-    leaves a valid schema, and the remaining field order is untouched.
-    semantic_query must still come last. See CLAUDE.md.
+    None of the code-only fields is in `required` - all three carry defaults -
+    so removing the properties leaves a valid schema, and the remaining field
+    order is untouched. semantic_query must still come last. See CLAUDE.md.
     """
     schema = ParsedQuery.model_json_schema()
+    properties = schema.get("properties", {})
     for field in _CODE_ONLY_FIELDS:
-        schema.get("properties", {}).pop(field, None)
+        properties.pop(field, None)
+    # Intersected with properties rather than assigned blindly: a field renamed
+    # in ParsedQuery would otherwise put a name in `required` that no property
+    # satisfies, and Ollama would reject every parse rather than one field.
+    schema["required"] = [f for f in _REQUIRED_FIELDS if f in properties]
     return schema
 
 
@@ -215,6 +249,32 @@ def _resolve_tags(candidates: list[str], vocabulary: tuple[str, ...]) -> list[st
     return [tag for tag in resolved if tag is not None]
 
 
+# The cost of making `platforms` required: it must now emit the key, and on a
+# query naming no OS it sometimes fills all three rather than an empty list -
+# "cheap relaxing puzzle games, nothing scary" did it 3 times out of 3. Platforms
+# are ANDed in search, so that silently demands a game running on Windows AND
+# macOS AND Linux. Measured at 1 of 12 no-OS queries, and 0 of 40 eval queries.
+#
+# Leaving `platforms` optional instead is worse: the key then goes missing on
+# "on linux under 30$" and the real filter disappears, which is the bug this
+# whole change exists to fix.
+#
+# So it is guarded here rather than in the prompt, per the convention in
+# CLAUDE.md. The guard only fires when the query names no OS at all, so a genuine
+# "runs on windows, mac and linux" survives - and its failure mode is widening
+# the results, never narrowing them onto something unasked for.
+# Only the three real values of `Platform`. "steam deck" deliberately absent:
+# it is not one of them, so listing it would only stop the guard firing on a
+# query that still cannot mean "all three".
+_OS_NAMED = re.compile(r"\b(?:windows|linux|mac(?:os)?|osx)\b", re.IGNORECASE)
+
+
+def _drop_invented_platforms(parsed: ParsedQuery, text: str) -> None:
+    if len(parsed.platforms) == 3 and not _OS_NAMED.search(text):
+        logger.info("dropping invented platforms %s - query names no OS", parsed.platforms)
+        parsed.platforms = []
+
+
 def parse_query(text: str, model: str | None = None) -> ParsedQuery:
     """Natural language in, ParsedQuery out.
 
@@ -252,6 +312,10 @@ def parse_query(text: str, model: str | None = None) -> ParsedQuery:
     # The model was told to copy tags exactly. It will not always.
     parsed.required_tags = _resolve_tags(parsed.required_tags, vocabulary)
     parsed.excluded_tags = _resolve_tags(parsed.excluded_tags, vocabulary)
+
+    # Before the chips are built, so the UI never shows three platform chips the
+    # user did not ask for.
+    _drop_invented_platforms(parsed, text)
 
     # An empty semantic_query would embed nothing useful. Prefer the raw text.
     if not parsed.semantic_query.strip():

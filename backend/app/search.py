@@ -67,8 +67,21 @@ def _apply_filters(stmt: Select[tuple], parsed: ParsedQuery) -> Select[tuple]:
         stmt = stmt.where(getattr(Game, platform).is_(True))
 
     if parsed.required_tags:
-        # @> against the GIN index: the row's tags must contain all of these.
-        stmt = stmt.where(Game.tags.contains(parsed.required_tags))
+        # && against the GIN index: the row must carry at least ONE of these,
+        # not all of them. It was `@>` (all-of) and that cost recall rather than
+        # buying precision - measured over 118 queries, all-of scored 55.4%
+        # against any-of's 60.0%, and of the 72 queries that got tags it helped
+        # 3 and hurt 11. Six under-delivered and "running a bookshop and taking
+        # on cosmic horror" returned ZERO rows on Cozy + Horror + Investigation,
+        # because nothing carries all three.
+        #
+        # Any-of is the right shape for this filter: the vector does the
+        # discriminating and the tags are a coarse recall gate ahead of it. It
+        # does not weaken co-op or versus intent, which travels through
+        # `multiplayer` and game_categories rather than through tags. Same GIN
+        # index serves both operators, so this needed no migration.
+        # See failures.md #33.
+        stmt = stmt.where(Game.tags.overlap(parsed.required_tags))
     if parsed.excluded_tags:
         # && is "overlaps"; negated, "shares none of these". Games with no tags
         # have an empty array rather than NULL, so they correctly pass.

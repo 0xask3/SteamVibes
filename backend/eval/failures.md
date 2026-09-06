@@ -1321,3 +1321,167 @@ non-deterministic part; this is the same lesson one layer up. So
 `--parse` difference of one query is not evidence of anything. Worth knowing
 before someone reads a 0.4-point parser "improvement" as a result - which is
 exactly what this entry would have said if I had not checked which query moved.
+
+---
+
+### 33. Every field was optional, so the model just stopped emitting them (2026-09-07)
+
+**Reported.** `game that feels like call of duty, but no wars on linux under 30$`
+extracted `linux` and `not War` but no price. The suspicion was the `$` sign
+rather than the word "dollars".
+
+**That was wrong, and cheap to kill.** Each notation alone parses fine - `30$`,
+`$30`, `30 dollars`, `30 USD`, `30 bucks`, "cheaper than 30$" all give 30. And
+inside the full query *all four* notations fail identically. So it is not the
+symbol, and it is not the wording.
+
+**Root cause: `_llm_schema()` marked every field optional but `semantic_query`.**
+Pydantic puts a field in `required` only when it has no default, and every field
+except `semantic_query` carries one. Ollama's `format` compiles that schema into
+a grammar, and an optional property is a branch the model may simply skip. Raw
+output for the failing query:
+
+```json
+{ "semantic_query": "game that feels like call of duty",
+  "excluded_tags": ["War"], "platforms": ["linux"], "max_required_age": null }
+```
+
+`max_price_usd` is **absent**, not null. Downstream that is identical to "no
+price requested", so the filter vanished with no error and no log line. Note the
+model understood perfectly well - it stripped "under 30$" out of
+`semantic_query`. It just never emitted the key.
+
+**Two things this had been hiding.**
+
+1. **The field-order invariant was already broken.** CLAUDE.md says order is
+   load-bearing and `semantic_query` must be declared last because generation
+   follows declaration order. It does not: with optional properties the model
+   emits keys in whatever order it likes, and it put `semantic_query` FIRST -
+   the exact failure declaring it last was meant to prevent. Setting `required`
+   restores real declaration order, verified against the raw keys.
+2. **It was systemic, not a price quirk.** Over the `compare_parsers` set x 3
+   reps the shipped schema dropped `required_tags` on **64%** of parses (27/42)
+   against 7% when required - including `co-op base builder under 20 dollars
+   that runs on linux`, which is the prompt's own worked example.
+
+**Then the obvious fix made recall worse, and that was the interesting part.**
+
+| schema | overall | core | specific | tail |
+| --- | --- | --- | --- | --- |
+| shipped | 54.1% | 12.8% | 72.7% | 63.6% |
+| scalars required | 51.6% | 12.8% | 70.5% | 59.1% |
+| every field required | 46.5% | 12.8% | 68.2% | 47.7% |
+
+Forcing the fields makes the model emit `required_tags` far more often - on the
+`tail` tier, 23/40 queries to 37/40, mean 0.70 to 1.18 tags - and every extra tag
+was another `@>` conjunct.
+
+**The second defect, which the first one was masking.** `required_tags` was
+ANDed: `Game.tags.contains()`, `tags @> ARRAY[...]`. One parse per query, four
+filter semantics, n=118:
+
+| tag filter | overall | core | specific | tail | under-delivered |
+| --- | --- | --- | --- | --- | --- |
+| `@>` all-of | 55.4% | 11.1% | 72.7% | 68.2% | 6 |
+| `&&` any-of | 60.0% | 16.1% | 79.5% | 70.5% | 0 |
+| first tag only | 57.9% | 14.4% | 77.3% | 68.2% | 0 |
+| no tag filter at all | 61.3% | 17.8% | 79.5% | 72.7% | 0 |
+
+Of the 72 queries that got tags, ANDing **helped 3 and hurt 11** - and all three
+it helped carried exactly one tag. `running a bookshop and taking on cosmic
+horror` returned **zero rows**: nothing in 130,651 games carries `Cozy` AND
+`Horror` AND `Investigation`. With `&&` that is 8,544 games.
+
+**The instrument could not referee this.** Only 7 of the 118 eval queries contain
+anything constraint-like, and **none** names a price, platform, year or age. So
+every filter the parser extracts can only shrink the candidate set, and
+`run_eval --parse` measures how little the parser does rather than how well it
+parses. That is why "delete the tag filter" tops the table above and is still the
+wrong answer - and why the middle table is not evidence against requiring the
+scalars. Proof it is blind rather than merely unkind: strip the tag arrays out of
+the schema entirely and `--parse` scores 60.5 / 17.8 / 79.5 / 70.5, which is the
+no-parse baseline to the decimal. With no tags the parse is a no-op on this set.
+
+**A third defect, created by the first fix.** Making `platforms` required means
+the model must emit the key - and on a query naming no OS it sometimes fills all
+three rather than an empty list. `cheap relaxing puzzle games, nothing scary`
+did it 3 times out of 3. Platforms are ANDed in `_apply_filters`, so that
+silently demands a game running on Windows AND macOS AND Linux. Measured at 1 of
+12 no-OS queries in `compare_parsers` and 0 of 40 eval queries, so it is narrow
+but deterministic where it fires.
+
+The first check for this missed it: I counted "invented scalars" over
+`max_price_usd`, `min_price_usd`, `released_after`, `multiplayer` and
+`max_required_age` - which came back 0 of 21 - and never looked at `platforms`,
+the one array in the required set. A negative result is only as wide as the
+fields you actually looked at.
+
+Leaving `platforms` optional instead is worse, and measured: the key then goes
+missing on `on linux under 30$` and the real platform filter disappears, which is
+the original bug. So it is guarded in code -
+`_drop_invented_platforms()` drops a three-platform list when the query names no
+OS at all. A genuine "runs on windows, mac and linux" survives, and the guard can
+only ever widen results.
+
+**Fix, all three parts, because either of the first two alone is a regression.**
+
+- `_REQUIRED_FIELDS` in `query_parser.py`: the scalars plus `platforms` and
+  `semantic_query`. The tag ARRAYS stay optional - forcing those is the 47.7%
+  tail row.
+- `Game.tags.contains()` becomes `Game.tags.overlap()` in `_apply_filters`. One
+  GIN index serves both operators, so no migration; confirmed by `EXPLAIN` that
+  `&&` still takes a bitmap scan on `ix_games_tags_gin`.
+- `_drop_invented_platforms()` in `query_parser.py`, for the defect above.
+
+**The result, and it took four runs to state honestly.** Against a
+baseline-equivalent run in the same session (both changes undone by monkeypatch,
+so the corpus and the Ollama state match), n=118:
+
+| | baseline | with both | delta |
+| --- | --- | --- | --- |
+| overall | 55.8% | 60.0% | +4.2 |
+| `specific` | 72.7% | 84.1% | +11.4 |
+| `core` | 12.8% | 16.1% | +3.3 |
+| `tail` | 68.2% | 65.9% | **-2.3** |
+
+So it is **not** better on every tier. `specific` carries the whole gain;
+`core`'s +3.3 is one query of 30; and `tail` is DOWN 2.3, which is exactly the
++-2.5 floor at n=44 - forcing the scalars makes the model emit more tags, and
+obscure games are the least likely to carry them. Counter-metric flat: 159 median
+reviews returned and 73% under 1k, against 143 and 74%.
+
+The first draft of this entry claimed "+5.9 and better on every tier", from one
+run against an older baseline pair. Four runs of the new code gave 56.6, 59.2,
+60.0, 60.0 and two baseline-equivalents gave 55.8 twice - so the honest claim is
++4.2, and the spread on the new code is wider than the gap on `tail`.
+
+**And that spread is itself a finding.** #32 put the `--parse` reproducibility
+floor at "at least one query wide". It is wider: four queries moved between two
+runs of identical code - `playing as a mouse sneaking through a ruined castle`,
+`Rätselspiel...`, `hunting monsters and cooking...` and `Puzzlespiel, das
+Schachzüge...`, all 0% then all 100%. Chasing them cost two wrong diagnoses:
+first "the platform guard fixed them" (it did not - all four parse with
+`platforms: []`), then "the model over-strips `Rätselspiel`" (it does, 3/3, but
+that query scores 100% anyway). Both were stories told about noise. A `--parse`
+difference under ~3.5 points is not a result, and a per-query flip is not a
+mechanism until the same code reproduces it.
+
+**What it costs.** Parse goes 0.56s to 1.06s. Purely output tokens - 46-52 to
+91-99 at a constant ~75 tok/s - and unavoidable if the model must emit every key.
+The API's first-search path goes ~1.35s to ~1.85s; the chip path still does not
+re-parse and stays at 0.095s.
+
+**What to take from this.** Three things worth more than the bug.
+
+1. **An optional field in a constrained-decoding schema is an invitation to
+   omit it.** `format` guarantees the output *validates*; it does not guarantee
+   the output is *complete*, and a schema built from Pydantic defaults is almost
+   entirely optional by accident. Absence then reads downstream as "not
+   requested".
+2. **"The prompt is full" was over-applied.** #13, #22 and #32 all blamed prompt
+   saturation for a vanishing filter. Some of that stands, but this mechanism
+   explains the same symptom and is a one-line schema property. Check what the
+   grammar permits before rewriting a prompt.
+3. **An eval made of pure descriptions cannot price constraint extraction.** It
+   can only punish it. Before reading a `--parse` number as a verdict on the
+   parser, check whether any query in the set contains the thing being parsed.

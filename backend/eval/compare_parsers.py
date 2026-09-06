@@ -34,6 +34,11 @@ QUERIES = [
     # while all ten queries above still passed - the harness could not catch a
     # regression it never exercised.
     "game that feels like call of duty, but no wars on linux under 30$",
+    # The price sits last, behind a platform, and was silently dropped for
+    # weeks: the schema made every field optional, so the model just never
+    # emitted the max_price_usd key. Not a $-versus-"dollars" problem - every
+    # notation parses alone and every notation failed here. See failures.md #33.
+    "shooter, no wars, on linux under 30$",
     # Popularity plus an exclusion the trigram gap cannot yet handle.
     "I like FPS shooters, suggest some excluding call of duty, which are also popular",
     # Four clauses, and `multiplayer` is the one that falls off the end: the
