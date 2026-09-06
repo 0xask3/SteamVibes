@@ -16,6 +16,7 @@ import argparse
 import logging
 import textwrap
 
+from app.embedding import verify_corpus_model
 from app.query_parser import parse_query
 from app.schemas import ParsedQuery, SearchResponse, SearchResult
 from app.search import search
@@ -185,6 +186,10 @@ def main() -> None:
     # WARNING and above to stderr, so the parser fallback is visible rather
     # than silent. CLAUDE.md: the fallback AND the log line.
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    # Before the first embed call, not after: a model mismatch is silent at
+    # every other layer, so it has to be checked rather than noticed.
+    verify_corpus_model()
 
     response = search(
         build_parsed_query(args), limit=args.limit, threshold=args.threshold

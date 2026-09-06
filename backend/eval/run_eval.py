@@ -32,6 +32,7 @@ from typing import Any
 import yaml
 
 from app.config import settings
+from app.embedding import verify_corpus_model
 from app.query_parser import parse_query
 from app.schemas import ParsedQuery
 from app.search import search
@@ -95,6 +96,11 @@ def main() -> None:
     args = argp.parse_args()
 
     logging.basicConfig(level=logging.ERROR)  # the table is the output
+
+    # A results table produced against a corpus embedded by a different model is
+    # worse than no table: it looks exactly like a model comparison. Checked
+    # here because this file's whole job is deciding whether a change helped.
+    verify_corpus_model()
 
     cases = load_cases()
     names: dict[int, str] = {}

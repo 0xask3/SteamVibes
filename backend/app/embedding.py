@@ -85,6 +85,72 @@ def document_prefix() -> str:
     return _prefixes(settings.embed_model)[1]
 
 
+def _reason(response: httpx.Response) -> str:
+    """Ollama's own explanation, which raise_for_status() throws away.
+
+    The message is the whole diagnosis: "input (3002 tokens) is too large to
+    process" points at batching, where a bare 400 sent us looking for a corrupt
+    row that did not exist. Falls back to the raw body, because an error page is
+    still more informative than a status code.
+    """
+    try:
+        message = response.json().get("error")
+    except ValueError:
+        message = None
+    return str(message or response.text or "<empty body>").strip()[:300]
+
+
+def _post_batch(inputs: list[str]) -> list[list[float]]:
+    """Embed one batch, halving it if the server rejects the batch as too large.
+
+    Ollama packs several inputs into a single server task, and it is the PACKED
+    token count that gets checked against the physical batch size - so a request
+    of perfectly ordinary rows can be rejected while every text in it is tiny.
+    settings.embed_num_batch raises that ceiling to the model's context; this
+    halving is the net for anything above it, and for a ceiling that turns out
+    to be model-specific.
+
+    Splitting is safe because embeddings are per-input and order is preserved:
+    the only cost is an extra round trip. A single input that still fails raises,
+    because at that point it really is the text.
+
+    Retries the batch, never the whole run: ingest is resumable, but a 30-minute
+    job should not die on a transient. The WARNING is the point - a silent split
+    would hide a model that cannot handle the corpus at all.
+    """
+    response = _client.post(
+        "/api/embed",
+        json={
+            "model": settings.embed_model,
+            "input": inputs,
+            # Without this Ollama evicts the model after 5 minutes idle, and the
+            # next query spends ~18s reloading it to do ~20ms of work.
+            "keep_alive": settings.ollama_keep_alive,
+            "options": {"num_batch": settings.embed_num_batch},
+        },
+    )
+
+    if response.status_code == 400 and len(inputs) > 1:
+        half = len(inputs) // 2
+        logger.warning(
+            "Ollama rejected a batch of %d (%s). Retrying as %d + %d.",
+            len(inputs),
+            _reason(response),
+            half,
+            len(inputs) - half,
+        )
+        return _post_batch(inputs[:half]) + _post_batch(inputs[half:])
+
+    if response.is_error:
+        raise RuntimeError(
+            f"{settings.embed_model} rejected {len(inputs)} input(s) with HTTP "
+            f"{response.status_code}: {_reason(response)}"
+        )
+
+    vectors: list[list[float]] = response.json()["embeddings"]
+    return vectors
+
+
 def embed_texts(texts: list[str], *, is_query: bool = False) -> list[list[float]]:
     """Embed a batch in one round trip.
 
@@ -100,19 +166,7 @@ def embed_texts(texts: list[str], *, is_query: bool = False) -> list[list[float]
         return []
 
     prefix = _prefixes(settings.embed_model)[0 if is_query else 1]
-
-    response = _client.post(
-        "/api/embed",
-        json={
-            "model": settings.embed_model,
-            "input": [prefix + text for text in texts] if prefix else texts,
-            # Without this Ollama evicts the model after 5 minutes idle, and the
-            # next query spends ~18s reloading it to do ~20ms of work.
-            "keep_alive": settings.ollama_keep_alive,
-        },
-    )
-    response.raise_for_status()
-    vectors: list[list[float]] = response.json()["embeddings"]
+    vectors = _post_batch([prefix + text for text in texts] if prefix else texts)
 
     if len(vectors) != len(texts):
         raise RuntimeError(
@@ -125,6 +179,57 @@ def embed_texts(texts: list[str], *, is_query: bool = False) -> list[list[float]
             "requires a migration - see CLAUDE.md."
         )
     return vectors
+
+
+@cache
+def verify_corpus_model() -> None:
+    """Fail loudly if the corpus was embedded by a model other than EMBED_MODEL.
+
+    Nothing else catches this. `embed_texts` checks the dimension, but arctic,
+    bge-m3, qwen3-embedding and the column are all 1024, so a mismatched
+    EMBED_MODEL sails straight through it: the query gets embedded in one space
+    and compared against documents in another. There is no exception and no
+    empty result set, just quietly worse rankings forever - the same shape as
+    failures.md #13 and #22, and the reason _MODEL_PREFIXES is keyed on the
+    model name instead of being two settings that can drift.
+
+    The window is exactly when the model is being changed. Switching is a .env
+    line plus `alembic downgrade 0006`, `embed_all --reload` and
+    `alembic upgrade head`; stopping between any two of those leaves the halves
+    disagreeing, and the eval would report the difference as a model result.
+
+    A half-finished re-embed trips this too, which is correct: a corpus split
+    across two models cannot be ranked against either one.
+
+    Cached, so this is one query per process rather than one per search.
+    """
+    from sqlalchemy import distinct, select
+
+    from app.db import session_scope
+    from app.models import Game
+
+    with session_scope() as session:
+        found = {
+            model
+            for model in session.scalars(
+                select(distinct(Game.embedding_model)).where(Game.embedding.isnot(None))
+            )
+            if model is not None
+        }
+
+    # Nothing embedded yet is not this function's problem - embed_all says so
+    # far more usefully, and the API should still start against an empty corpus.
+    if not found or found == {settings.embed_model}:
+        return
+
+    listed = ", ".join(sorted(found))
+    raise SystemExit(
+        f"EMBED_MODEL is {settings.embed_model!r} but the corpus was embedded "
+        f"by {listed}. Queries would be embedded in a different space than the "
+        "documents, which returns worse results with no error. Either set "
+        "EMBED_MODEL back, or re-embed: alembic downgrade 0006, "
+        "embed_all --reload, alembic upgrade head."
+    )
 
 
 def embed_query(text: str) -> list[float]:

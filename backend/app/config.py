@@ -33,6 +33,16 @@ class Settings(BaseSettings):
     # a setting: it is EMBEDDING_DIM in app/models.py, fixed by the migration.
     embed_model: str = "nomic-embed-text"
 
+    # Ollama's physical batch (n_ubatch), sent as an option on every embed call.
+    # It packs several inputs into one server task, and the PACKED token count is
+    # what gets checked against this - so a batch of ordinary rows can be
+    # rejected while every text in it is tiny. A 130,651-row run died on a task
+    # of 3,002 tokens with 2,048 as the default, between two rows of 114 and 134
+    # (NOTES.md 2026-09-06). Capped by the model's context, so raising this past
+    # n_ctx does nothing. embed_texts still halves a rejected batch, because this
+    # raises the ceiling rather than removing it.
+    embed_num_batch: int = 4096
+
     # How long Ollama keeps the model in VRAM after a request. Its default is
     # 5m, after which the next query pays an ~18s cold load - which dwarfs the
     # ~20ms the embedding itself takes. The model is 323MB, so holding it is
