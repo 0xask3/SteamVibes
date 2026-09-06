@@ -6,7 +6,9 @@ embedding run.
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/app/config.py -> backend/app -> backend -> repo root
@@ -74,6 +76,69 @@ class Settings(BaseSettings):
     # false positives while still finding ELDEN RING and Stardew Valley.
     # See failures.md #21.
     title_match_min_reviews: int = 50_000
+
+    # pgvector's ef_search default of 40 is too small here: measured recall@10
+    # at threshold 10 was 15.0% against the 18.3% of the exact scan the index
+    # replaced, and 200 recovers that exactly for 45ms -> 53ms. It is also the
+    # pool the reranker draws from, so it is a knob, not a constant.
+    # See NOTES.md 2026-09-04.
+    hnsw_ef_search: int = 200
+
+    # How many index hits get reranked. Must not exceed hnsw_ef_search: stage 1
+    # cannot return more candidates than it was allowed to look at, and coming
+    # up short is silent - no error, just a smaller pool.
+    rerank_candidates: int = 200
+
+    # How prominence enters the ranking. Cosine similarity has none of its own:
+    # `Square City Builder` (27 reviews) ties `Cities: Skylines II` (73,524) for
+    # "city builder", and eight of that top ten are under 1,000 reviews.
+    #
+    #   none - pure cosine, exactly today's ordering
+    #   log  - (1 - dist) + w * log10(1 + reviews) / LOG10_MAX_REVIEWS
+    #   rrf  - reciprocal rank fusion of the cosine and popularity orderings
+    #
+    # Measured at matched tail cost the two are equivalent - log 0.05 and rrf
+    # 0.20 both give 25.0% recall@10 at ~70% of results under 1,000 reviews, and
+    # log 0.20 and rrf 1.00 both give 31.1%. So the tiebreak is durability, and
+    # rrf wins it: log's weight is calibrated against the model's cosine spread
+    # (qwen3's top 10 spans 0.752-0.696, arctic's 0.577-0.502), while rrf reads
+    # only ranks and means the same thing after a model swap. That matters here
+    # because the model choice is itself provisional - see CLAUDE.md.
+    #
+    # 0.20 is NOT the weight that maximises recall. recall@10 peaks at 35.6%
+    # (rrf 2.00), but every one of the 37 ground-truth games has >=11,267
+    # reviews, so recall rises with the weight until the corpus is gone: at the
+    # peak only 4% of returned results have under 1,000 reviews, against 79%
+    # unweighted. That is REVIEW_THRESHOLD=10000 by another route, and we
+    # already refused that trade. 0.20 is the smallest weight that fixes the
+    # observed defect - Cities: Skylines II above a 27-review asset flip for
+    # "city builder" - while leaving 70% of results in the tail.
+    # See failures.md #26.
+    rank_method: Literal["none", "log", "rrf"] = "rrf"
+    popularity_weight: float = 0.20
+
+    # RRF's rank-smoothing constant. 60 is the value from the original paper and
+    # the usual default; it decides how quickly the benefit of being ranked
+    # higher flattens out.
+    rrf_k: int = 60
+
+    @model_validator(mode="after")
+    def _pool_fits_in_search(self) -> Settings:
+        """Refuse a rerank pool the index cannot fill.
+
+        Stage 1 cannot return more candidates than ef_search let it look at, and
+        coming up short raises nothing - the reranker just gets a smaller pool
+        and the results quietly get worse. Same class of failure as the
+        iterative_scan shortfall in search.py, so it is checked rather than
+        commented.
+        """
+        if self.rerank_candidates > self.hnsw_ef_search:
+            raise ValueError(
+                f"rerank_candidates ({self.rerank_candidates}) exceeds "
+                f"hnsw_ef_search ({self.hnsw_ef_search}), so stage 1 cannot "
+                "supply the pool. Raise HNSW_EF_SEARCH to at least match."
+            )
+        return self
 
 
 @lru_cache(maxsize=1)

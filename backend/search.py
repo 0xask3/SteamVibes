@@ -32,7 +32,14 @@ def format_price(result: SearchResult) -> str:
 
 
 def print_result(rank: int, result: SearchResult) -> None:
-    print(f"\n{rank:>2}. {result.name}   [{result.score:.3f}]")
+    # Show the ranking key alongside the similarity whenever they differ.
+    # Similarity alone reads as a bug once a popularity term is ordering the
+    # list: the printed numbers are not monotonic and nothing on screen says
+    # why. Equal values mean rank_method is "none".
+    marks = f"{result.score:.3f}"
+    if result.rank_score != result.score:
+        marks = f"sim {result.score:.3f}  rank {result.rank_score:.4f}"
+    print(f"\n{rank:>2}. {result.name}   [{marks}]")
 
     facts = [format_price(result), f"{result.total_reviews:,} reviews"]
     if result.positive_ratio is not None:

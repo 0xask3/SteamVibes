@@ -97,9 +97,20 @@ def main() -> None:
     label = "parsed" if args.parse else "semantic only"
     threshold = settings.review_threshold if args.threshold is None else args.threshold
     print(f"\n{len(cases)} queries | recall@{args.limit} | {label}")
-    # Self-labelling: these two decide the numbers below, and a results table
-    # pasted into NOTES.md without them is not reproducible.
-    print(f"model: {settings.embed_model}  |  review threshold: {threshold:,}\n")
+    # Self-labelling: these decide the numbers below, and a results table
+    # pasted into NOTES.md without them is not reproducible. The ranking line
+    # matters as much as the model: "18.3%" means nothing without knowing
+    # whether a popularity term produced it.
+    rank: str = settings.rank_method
+    if settings.rank_method == "log":
+        rank = f"log (w={settings.popularity_weight})"
+    elif settings.rank_method == "rrf":
+        rank = f"rrf (w={settings.popularity_weight}, k={settings.rrf_k})"
+    print(f"model: {settings.embed_model}  |  review threshold: {threshold:,}")
+    print(
+        f"rank:  {rank}  |  ef_search: {settings.hnsw_ef_search}  |  "
+        f"pool: {settings.rerank_candidates}\n"
+    )
     print(f"{'':4}{'query':<52}{'lang':<6}{'recall':>7}")
     print("-" * 70)
 

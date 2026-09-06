@@ -9,7 +9,9 @@ produces plausible results forever rather than an error.
 
 import time
 
-from sqlalchemy import Select, and_, exists, func, not_, select, text
+from sqlalchemy import Float, Select, and_, cast, exists, func, not_, select, text
+from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql.selectable import Subquery
 
 from app.config import settings
 from app.db import session_scope
@@ -18,6 +20,12 @@ from app.models import Game, GameCategory, GameTag
 from app.schemas import ParsedQuery, SearchResponse, SearchResult
 
 TOP_TAGS_SHOWN = 5
+
+# log10 of the most-reviewed game in the corpus (8,815,087), which normalises
+# the popularity term to roughly [0, 1]. A constant rather than a subquery: it
+# is a property of a static Kaggle snapshot, and making every search pay a
+# max() to learn something that cannot change would be silly.
+LOG10_MAX_REVIEWS = 6.95
 
 # Steam's own categories, not community tags: 12,643 games carry the `Co-op`
 # category against 5,263 with the `Co-op` tag. The list is broader than
@@ -112,6 +120,53 @@ def _platforms(windows: bool, mac: bool, linux: bool) -> list[str]:
     return [name for name, supported in names if supported]
 
 
+def _rank_score(cand: Subquery) -> ColumnElement[float]:
+    """Stage 2's ordering key, over the candidate pool stage 1 retrieved.
+
+    Cosine similarity carries no notion of prominence, and in a corpus that is
+    58% games with 10 reviews or fewer that is not a small gap: `Square City
+    Builder` (27 reviews) ties `Cities: Skylines II` (73,524) for "city
+    builder". This adds one back, continuously - the review threshold already
+    does it as a cliff, and buying recall by deleting 128,949 games is not the
+    trade we want. See failures.md #24.
+
+    Both methods are here so the eval can choose between them rather than the
+    choice being argued. They differ in what they are sensitive to:
+
+    `log` scores, so a much closer match keeps its margin - but the weight is
+    only meaningful relative to the model's cosine spread, and that varies
+    (qwen3's top 10 spans 0.752-0.696, arctic's 0.577-0.502). Change the model
+    and the weight needs re-tuning.
+
+    `rrf` ranks, so it is immune to that, at the cost of flattening magnitude:
+    the closest match and the second closest are one rank apart whether they
+    differ by 0.2 or 0.002.
+    """
+    similarity = 1 - cand.c.dist
+    if settings.rank_method == "none":
+        return similarity
+
+    weight = settings.popularity_weight
+    if settings.rank_method == "log":
+        # log10 rather than raw count: reviews span five orders of magnitude,
+        # so a linear term would make the top ~50 games the only ones that
+        # exist. Cast because Postgres' log() is numeric and the rest of this
+        # is double precision.
+        popularity = cast(
+            func.log(10, cand.c.total_reviews + 1) / LOG10_MAX_REVIEWS, Float
+        )
+        return similarity + weight * popularity
+
+    # RRF. Ranks are within the candidate pool, which is the right frame: these
+    # rows already passed retrieval, so the question is only how to order them.
+    k = settings.rrf_k
+    rank_by_similarity = func.row_number().over(order_by=cand.c.dist)
+    rank_by_reviews = func.row_number().over(order_by=cand.c.total_reviews.desc())
+    return cast(1.0 / (k + rank_by_similarity), Float) + cast(
+        weight / (k + rank_by_reviews), Float
+    )
+
+
 def search(
     parsed: ParsedQuery, limit: int = 10, threshold: int | None = None
 ) -> SearchResponse:
@@ -133,11 +188,11 @@ def search(
 
     distance = Game.embedding.cosine_distance(query_vec)
 
-    stmt = select(
+    candidates = select(
         Game.app_id,
         Game.name,
         Game.short_description,
-        (1 - distance).label("score"),
+        distance.label("dist"),
         Game.list_price_usd,
         Game.is_free,
         Game.total_reviews,
@@ -153,11 +208,26 @@ def search(
             Game.total_reviews > effective_threshold,
         )
     )
-    stmt = _apply_filters(stmt, parsed)
+    candidates = _apply_filters(candidates, parsed)
 
     # Raw distance, not the derived score: only this form uses the index. The
-    # operator must stay cosine to match the index's vector_cosine_ops.
-    stmt = stmt.order_by(distance).limit(limit)
+    # operator must stay cosine to match the index's vector_cosine_ops. Stage 2
+    # reranks what comes back, so the blend never touches this ORDER BY.
+    cand = (
+        candidates.order_by(distance).limit(settings.rerank_candidates).subquery("cand")
+    )
+
+    rank_score = _rank_score(cand)
+    # "none" orders by the raw distance rather than by the equivalent
+    # `1 - dist` descending, so the no-op default is the same expression the
+    # single-stage query used and not merely an equal one.
+    ordering = cand.c.dist if settings.rank_method == "none" else rank_score.desc()
+
+    stmt = (
+        select(*cand.c, (1 - cand.c.dist).label("score"), rank_score.label("rank_score"))
+        .order_by(ordering)
+        .limit(limit)
+    )
 
     query_start = time.perf_counter()
     with session_scope() as session:
@@ -167,6 +237,13 @@ def search(
         # satisfied. SET LOCAL keeps it inside this transaction rather than
         # leaking onto a pooled connection.
         session.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
+        # pgvector's default of 40 is smaller than the pool stage 2 reranks,
+        # and on its own it cost 3.3 recall points against an exact scan
+        # (15.0% vs 18.3% at threshold 10) for 8ms of latency. Interpolated
+        # rather than bound: SET takes no parameters. int() is the guard.
+        session.execute(
+            text(f"SET LOCAL hnsw.ef_search = {int(settings.hnsw_ef_search)}")
+        )
         rows = session.execute(stmt).all()
     query_ms = (time.perf_counter() - query_start) * 1000
 
@@ -176,6 +253,7 @@ def search(
             name=row.name,
             short_description=row.short_description,
             score=float(row.score),
+            rank_score=float(row.rank_score),
             list_price_usd=row.list_price_usd,
             is_free=row.is_free,
             total_reviews=row.total_reviews,

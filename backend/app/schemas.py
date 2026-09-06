@@ -115,6 +115,14 @@ class SearchResult(BaseModel):
     # 1 - cosine distance. Higher is more similar; roughly 0.5-1.0 in practice.
     score: float
 
+    # What the ORDER BY actually used, once the popularity term is folded in.
+    # Equal to `score` when rank_method is "none". Exposed rather than kept
+    # internal so a result that outranks a closer match is explicable - the same
+    # reason SearchResponse carries `parsed`. Not comparable across rank
+    # methods: "log" produces a similarity-scale number and "rrf" a reciprocal
+    # -rank one, near 1/k.
+    rank_score: float
+
     # The normal price, not the scrape-day sale price. See CLAUDE.md.
     list_price_usd: Decimal | None = None
     is_free: bool = False

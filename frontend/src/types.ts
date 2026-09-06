@@ -42,6 +42,14 @@ export interface SearchResult {
   score: number;
 
   /**
+   * The key the results were actually ordered by, once the popularity term is
+   * folded in. Equals `score` when RANK_METHOD is "none". Not comparable
+   * across rank methods - "rrf" values sit near 1/k, not on the 0-1
+   * similarity scale.
+   */
+  rank_score: number;
+
+  /**
    * A STRING, not a number. Pydantic serialises Decimal as a string to avoid
    * float rounding, so "9.99" arrives rather than 9.99. Calling .toFixed() on
    * it would throw.

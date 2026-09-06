@@ -19,8 +19,19 @@ export function ResultCard({ result }: { result: SearchResult }) {
         >
           {result.name}
         </a>
-        {/* The similarity the ranking actually used, not a star rating. */}
-        <span className="score" title="cosine similarity">
+        {/* Similarity, not a star rating. Once a popularity term is ordering
+            the list these numbers stop descending, so say when that is why
+            rather than leaving it looking like a sorting bug. */}
+        <span
+          className="score"
+          title={
+            result.rank_score === result.score
+              ? "cosine similarity"
+              : `cosine similarity — ordered by ${result.rank_score.toFixed(
+                  4,
+                )}, which also weights review count`
+          }
+        >
           {result.score.toFixed(3)}
         </span>
       </header>
