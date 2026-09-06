@@ -31,7 +31,15 @@ class Settings(BaseSettings):
     # so it needs `embed_all --reload`, not just a restart - and the query/
     # document prefixes move with it (app/embedding.py). The vector width is NOT
     # a setting: it is EMBEDDING_DIM in app/models.py, fixed by the migration.
-    embed_model: str = "nomic-embed-text"
+    #
+    # The default is not decoration - it is what runs when .env is absent, and
+    # it was left at nomic-embed-text for two migrations after the project
+    # stopped using it. nomic emits 768 dimensions against a vector(1024)
+    # column, so that default could only ever have failed. It failed loudly
+    # (embed_texts raises on the dimension), which is the one reason it survived
+    # unnoticed. arctic is the measured winner over qwen3-embedding:0.6b and
+    # bge-m3 on 118 labelled queries - failures.md #30.
+    embed_model: str = "snowflake-arctic-embed2"
 
     # Ollama's physical batch (n_ubatch), sent as an option on every embed call.
     # It packs several inputs into one server task, and the PACKED token count is

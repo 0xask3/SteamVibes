@@ -1084,11 +1084,16 @@ same day, it settles:
 | --- | --- | --- | --- |
 | core (30) | **25.0%** | 17.8% | -7.2 |
 | specific (44) | 63.6% | **79.5%** | **+15.9** |
-| tail (44) | 63.6% | **72.7%** | **+9.1** |
-| EN (91) | 57.1% | **66.8%** | +9.7 |
+| tail (44) | 63.6% | **70.5%** | **+6.9** |
+| EN (91) | 57.1% | **65.8%** | +8.7 |
 | DE (27) | 42.6% | 42.6% | 0.0 |
-| overall | 53.8% | **61.3%** | **+7.5** |
-| median revs / under 1k | 132 / 74% | 137 / 75% | - |
+| overall | 53.8% | **60.5%** | **+6.7** |
+| median revs / under 1k | 132 / 74% | 147 / 74% | - |
+
+CORRECTED. The arctic column originally read tail 72.7 / EN 66.8 / overall 61.3,
+measured on a corpus that had been embedded in two halves under different
+`num_batch` settings. The figures above are from the uniform corpus that ships.
+The verdict does not change; see #31 for why the numbers moved at all.
 
 One query is 0.85 points at n=118, so +7.5 overall is about nine queries and
 +15.9 on `specific` is seven - against the two or three that the 74-query set had
@@ -1102,8 +1107,8 @@ raising `REVIEW_THRESHOLD` and concluded "qwen3 wins below ~1,000 reviews, arcti
 wins above it by 19 points," shipping qwen3 because threshold 10 is what ships.
 Raising the threshold *deletes rows from the corpus*, which is not the same
 experiment as *asking for an obscure game*. The `tail` tier asks directly - 44
-queries whose right answer has 30-300 reviews - and arctic wins it by 9.1 points
-at w=0.20 and 11.4 at w=none. There was never a regime where qwen3 was better at
+queries whose right answer has 30-300 reviews - and arctic wins it by 6.9 points
+at w=0.20 and 9.1 at w=none. There was never a regime where qwen3 was better at
 finding obscure games; there was a regime where the corpus had been cut down to
 1,702 rows and the two models were being scored on 30 queries about famous ones.
 The instrument, not the model, produced the crossover.
@@ -1120,7 +1125,7 @@ language at w=0.20:
 | --- | --- | --- |
 | core | 25.0 / 25.0 | 19.2 / 15.0 |
 | specific | 65.7 / 55.6 | 85.7 / 55.6 |
-| tail | 66.7 / 50.0 | 75.0 / 62.5 |
+| tail | 66.7 / 50.0 | 72.2 / 62.5 |
 
 `specific` English goes 65.7 -> 85.7 while German sits at 55.6 for both models -
 the same 5 of 9. n=9 is small enough that the exact tie is luck, but the shape is
@@ -1137,8 +1142,63 @@ unlisted, both scoring zero. It also returns a 44-review 50%-positive "Megacity
 Builder", which is a real defect. Both things are true and `core` cannot separate
 them, which is why it does not decide this.
 
-**Open, and needing plan mode:** arctic's largest no-tail-cost weight is 0.10,
-not 0.20 - `tail` is 75.0% at w<=0.10 and 72.7% at 0.20. By the rule in
-CLAUDE.md, which picks the weight from `tail` and the counter-metric, arctic
-should ship at 0.10. That is a search-ranking change and does not belong in this
-commit.
+**The weight question this raised is settled in #31, and the answer is no
+change.** The apparent case for dropping to 0.10 was a 2.3-point tail
+difference, which turns out to be exactly the size of this eval's
+reproducibility floor.
+
+### 31. The eval has a reproducibility floor, and it is one query wide (2026-09-06)
+
+#30 left one thing open: arctic's largest no-tail-cost weight looked like 0.10
+rather than the shipped 0.20, so the weight seemed to need changing. Before
+proposing that, a finer sweep - 0.10 / 0.125 / 0.15 / 0.175 / 0.20 / 0.25 - to
+find where `tail` actually falls instead of snapping to a grid point.
+
+It disagreed with the earlier run. Same model, same 118 queries, same config,
+`tail` 2.3 points lower at every weight, while `core` and `specific` came back
+identical. That is one query out of 44.
+
+**Isolating it, cheapest experiment first:**
+
+| test | result | rules out |
+| --- | --- | --- |
+| same config twice, same corpus | byte identical | query-time nondeterminism |
+| drop and rebuild HNSW, same vectors | byte identical | index graph build order |
+| re-embed the same model | `tail` moves 2.3 points | leaves the vectors |
+
+So the vectors themselves differ between two embeds of the same model on the
+same corpus, and there is a specific reason rather than general GPU noise: the
+first arctic corpus was embedded in two halves under **different `num_batch`
+settings** - 27,648 rows at Ollama's default 2,048 before that setting existed
+(#28's crash and resume), then 103,003 at 4,096 after. Physical batch size
+changes how the forward pass is grouped, which changes floating-point summation
+order, which flips results that sit near a tie. The corpus that ships was
+embedded uniformly at 4,096.
+
+**Consequences, in order of importance.**
+
+1. **The weight stays at 0.20.** The whole case for 0.10 was `tail` 75.0% vs
+   72.7%, a 2.3-point difference. The reproducibility floor is also 2.3 points.
+   There is no evidence here, and adopting 0.10 would have been fitting to noise
+   with a ranking change to show for it. `tail` on the uniform corpus is 72.7%
+   at w=none and 70.5% from 0.125 up, so the cost of the shipped weight is one
+   query either way.
+2. **The model verdict is unaffected.** Arctic beats qwen3 by 6.7 points overall
+   and 15.9 on `specific` - eight and seven queries. Comfortably above a
+   one-query floor, which is the only reason #30 survives this entry intact.
+3. **Differences under ~2.5 points at n=44, or ~1 point at n=118, are not
+   results.** That threshold now has a measurement behind it rather than an
+   intuition, and it retires a habit: three of this week's entries reported
+   differences in that range as though they meant something.
+4. **Never change embedding batch settings mid-corpus.** It produces a corpus
+   embedded two different ways, and nothing downstream can detect it -
+   `verify_corpus_model()` sees one model name and `verify_corpus_complete()`
+   sees no gaps. Both guards pass on a corpus that is quietly inhomogeneous.
+
+**What this cost and what it bought.** Four extra evals and an index rebuild,
+about twenty minutes, to decide *not* to make a change. That is the cheapest
+outcome available: the alternative was a plan-mode ranking change justified by a
+number I had not checked was real. The finer sweep was run to locate a cliff
+precisely and instead showed the cliff was inside the noise - which is the same
+lesson as #26 through #30, arriving for the fifth time. The measurement keeps
+being the thing that needs measuring.
