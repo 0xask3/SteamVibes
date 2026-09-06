@@ -47,6 +47,11 @@ class Case:
         self.lang: str = raw.get("lang", "en")
         self.expect: set[int] = set(raw["expect"])
         self.note: str | None = raw.get("from")
+        # "core" is short genre labels answered by famous games; "specific" is
+        # a detailed description with one right answer. Reported apart because
+        # they measure different things - see the queries.yaml header, which
+        # also records why neither tier can price a popularity weight.
+        self.tier: str = raw.get("tier", "core")
 
     def recall(self, returned: list[int], limit: int) -> tuple[float, set[int]]:
         """Fraction of expected ids in the top `limit`, plus the ones missed."""
@@ -93,10 +98,12 @@ def main() -> None:
     scores: dict[str, list[float]] = {"en": [], "de": []}
     elapsed: list[float] = []
     misses: list[tuple[Case, set[int]]] = []
+    tiers: dict[str, list[float]] = {"core": [], "specific": []}
+    returned_reviews: list[int] = []
 
-    label = "parsed" if args.parse else "semantic only"
+    mode_label = "parsed" if args.parse else "semantic only"
     threshold = settings.review_threshold if args.threshold is None else args.threshold
-    print(f"\n{len(cases)} queries | recall@{args.limit} | {label}")
+    print(f"\n{len(cases)} queries | recall@{args.limit} | {mode_label}")
     # Self-labelling: these decide the numbers below, and a results table
     # pasted into NOTES.md without them is not reproducible. The ranking line
     # matters as much as the model: "18.3%" means nothing without knowing
@@ -126,21 +133,59 @@ def main() -> None:
 
         recall, missed = case.recall([r.app_id for r in response.results], args.limit)
         scores[case.lang].append(recall)
+        tiers[case.tier].append(recall)
+        returned_reviews.extend(r.total_reviews for r in response.results)
         if missed:
             misses.append((case, missed))
 
         flag = "  " if recall == 1.0 else ("~ " if recall > 0 else "! ")
-        print(f"{flag}  {case.query[:50]:<52}{case.lang:<6}{recall:>6.0%}")
+        mark = "*" if case.tier == "specific" else " "
+        print(f"{flag}{mark} {case.query[:50]:<52}{case.lang:<6}{recall:>6.0%}")
 
     print("-" * 70)
+
+    def row(tag: str, values: list[float]) -> None:
+        """One summary line, padded so every percentage lands in a column."""
+        head = f"  recall@{args.limit} ({tag}):"
+        print(f"{head:<32}{statistics.mean(values):>6.1%}")
+
     for lang in ("en", "de"):
         if scores[lang]:
-            mean = statistics.mean(scores[lang])
-            print(f"  recall@{args.limit} ({lang.upper()}, n={len(scores[lang])}): {mean:.1%}")
+            row(f"{lang.upper()}, n={len(scores[lang])}", scores[lang])
 
-    overall = statistics.mean(scores["en"] + scores["de"])
-    print(f"  recall@{args.limit} (overall):      {overall:.1%}")
-    print(f"  median search latency:    {statistics.median(elapsed) * 1000:.0f}ms")
+    # NOT comparable to each other. Core queries are short genre labels whose
+    # ground truth names 2-3 famous games out of hundreds that would satisfy the
+    # query, so core recall understates quality; "specific" queries have exactly
+    # one right answer by construction. Compare a tier against itself across
+    # configs, never core against specific. Neither tier can price a popularity
+    # weight - every labelled target in this file, both tiers, sits above the
+    # 93rd percentile by review count. That is what the counter-metric below is
+    # for. See the queries.yaml header and failures.md #26.
+    for tier in ("core", "specific"):
+        if tiers[tier]:
+            row(f"{tier}, n={len(tiers[tier])}", tiers[tier])
+
+    row("overall", scores["en"] + scores["de"])
+
+    # Counter-metric, and the honest one. recall@k cannot see what a popularity
+    # weight DELETES, because ground truth is a list of games somebody thought
+    # of - and people think of famous games. Worse, a labelled long-tail tier
+    # does not fix that on its own: if the query paraphrases the game's own
+    # description the target sits at cosine rank ~1, where a popularity term is
+    # too small to dislodge it, so the tier reports "no harm" by construction.
+    #
+    # This needs no labels and no query authorship, so neither bias reaches it.
+    # It just asks how obscure the returned results actually are. Context: the
+    # review threshold already removes 58% of the corpus, and of the 55,120
+    # games that remain 69% have under 200 reviews. If those never come back,
+    # the long tail is not being searched - which is the product. See
+    # failures.md #26.
+    if returned_reviews:
+        under_1k = sum(n < 1000 for n in returned_reviews) / len(returned_reviews)
+        median_revs = int(statistics.median(returned_reviews))
+        print(f"  median reviews returned:{median_revs:>9,}")
+        print(f"  results under 1k reviews:{under_1k:>8.0%}")
+    print(f"  median search latency:{statistics.median(elapsed) * 1000:>10.0f}ms")
 
     if args.misses and misses:
         print("\nmissed:")

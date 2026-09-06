@@ -844,3 +844,86 @@ then the harness cannot tell a better ranker from a more popular one, and any
 weight above 0.20 is unjustifiable from evidence this file contains. This is the
 fourth falsified hypothesis here (#19, #20, #25), and the first where the
 *metric* rather than the idea was the thing that was wrong.
+
+### 27. The fix for #26 was labelled long-tail queries. They were not long tail (2026-09-06)
+
+#26 ended with "`queries.yaml` needs labelled queries whose answers are
+obscure". I wrote 22, ran the sweep, and got the opposite of the predicted
+shape: recall on the new tier **rose** with the popularity weight, 54.5% at
+w=0.2 to 68.2% at w=1.0. Two independent mistakes, both mine, both in the
+ground truth rather than the ranker.
+
+**Mistake 1 - the sampler returned the head of the tail.**
+`sample_longtail.sql` selected `DISTINCT ON (g.tags[1]) ... ORDER BY
+g.tags[1], g.total_reviews DESC` over a 50-5,000 review band. `DISTINCT ON`
+keeps the first row per group, so that is the *most*-reviewed game in each tag
+- the top edge of the band. I then picked the 22 I recognised. Measured
+afterwards, every target sits in the 93rd-98th percentile of the corpus by
+review count, median **97.1**. Against the 55,120 games above the review
+threshold: 44% have 11-49 reviews, 69% have under 200, and the median
+searchable game has ~90. The tier had no games from any of that.
+
+**Mistake 2 - the queries were paraphrases of the embedded text.** The sampler
+printed 72 characters of `short_description`, which is part of `embed_text`, and
+I wrote each query while reading it. That puts the target at cosine rank ~1, and
+RRF's popularity term is bounded by `w/(k+1)` = `w/61`. At w=0.2 that is 0.0033,
+the same as the gap between cosine rank 1 (1/61) and rank 16 (1/76) - so the
+term can move a game about fifteen places and **cannot** dislodge a rank-1 hit.
+The tier reported "no harm" by construction. Contamination did not merely
+inflate the number; it removed the tier's ability to detect the harm it existed
+to detect.
+
+**The measurement that does work, and needs no labels.** Median review count of
+everything returned, and the share under 1,000. It cannot be gamed by target
+selection or by query authorship, because it does not use either. Sweep at
+threshold 10, `rrf`, 52 queries:
+
+| w | core | specific | median reviews returned | under 1k |
+| --- | --- | --- | --- | --- |
+| none | 18.3% | 54.5% | 65 | 79% |
+| 0.05 | 18.3% | 54.5% | 69 | 77% |
+| 0.10 | 18.3% | 54.5% | 82 | 75% |
+| **0.20** | **25.0%** | 54.5% | **165** | **70%** |
+| 0.40 | 26.7% | 59.1% | 438 | 60% |
+| 1.00 | 31.1% | 68.2% | 4,021 | 23% |
+| 2.00 | 35.6% | 68.2% | 9,315 | 5% |
+
+Both recall columns climb monotonically to the end of the sweep. The plan for
+this work named that shape in advance as the disqualifying one: "If it climbs
+without limit, the term is measuring the ground truth's bias." It does, so it
+is, and recall@10 is not the selector.
+
+**Why the new tier rose.** At w=1.0 the median returned game has 4,021 reviews
+- the 97.6th percentile, which is precisely the stratum the 22 targets occupy
+(median 97.1). The ranker was not finding obscure games better; it was
+returning games at exactly my targets' popularity level.
+
+**`rrf w=0.20` stands, on a different argument than #26 gave it.** Core recall
+gained per point of under-1k share surrendered:
+
+| step | core gain | tail cost | ratio |
+| --- | --- | --- | --- |
+| none -> 0.20 | +6.7 | 9 pts | **0.74** |
+| 0.20 -> 0.40 | +1.7 | 10 pts | 0.17 |
+| 0.40 -> 1.00 | +4.4 | 37 pts | 0.12 |
+| 1.00 -> 2.00 | +4.5 | 18 pts | 0.25 |
+
+0.20 is four times more efficient than any step above it, and it is a corner
+rather than a preference. #26 called it "deliberately ten points below the eval
+optimum", i.e. chosen by caution; it is also the knee of the curve. The ratios
+above 0.20 are upper bounds, because those core points are partly the ground
+truth's bias being paid back to itself.
+
+**Still open.** There is no genuine long-tail tier. `sample_longtail.sql` is
+rewritten to sample 30-300 reviews ordered by `md5(app_id::text)` and to print a
+percentile column, so the next attempt is checkable at a glance - but the
+contamination problem has no clean answer, because writing a query about a game
+with 80 reviews means reading something about it, and everything available is in
+`embed_text`. Best available discipline is in the file header: read the blurb,
+then write the query in a player's words rather than the store page's. Until
+that exists, the tail-cost columns are the only honest evidence about ranking
+weight, and this file has no basis for a weight above 0.20.
+
+Fifth falsified hypothesis (#19, #20, #25, #26), and the second running where
+the metric rather than the idea was wrong. #26 caught the ground truth being
+biased; #27 is the fix for that bias having the same bias.

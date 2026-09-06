@@ -4,6 +4,43 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-06 — The long-tail eval tier was the 97th percentile
+
+**What broke.** NOTES 2026-09-05 ended needing labelled queries with obscure
+answers, so recall could see what a popularity weight deletes. I wrote 22 and
+swept the weight. Recall on the new tier rose with the weight — 54.5% at w=0.2
+to 68.2% at w=1.0 — when the entire point of the tier was that it should fall.
+
+**What I tried.** Checked the targets rather than the ranker, on the principle
+that a metric behaving backwards is usually the metric. Percentile of each of
+the 22 app_ids against the corpus: median **97.1**, none below 93.4. The cause
+was one clause in my own sampler — `DISTINCT ON (tags[1]) ORDER BY tags[1],
+total_reviews DESC` keeps the *most*-reviewed game per tag, so a 50-5,000 band
+returned its top edge. Then I picked the ones I recognised. A second bias
+underneath it: I wrote each query while reading the game's `short_description`,
+which is inside `embed_text`, so the targets sat at cosine rank ~1 — and RRF's
+popularity term is capped at `w/(k+1)`, worth about fifteen rank places at
+w=0.2. It arithmetically cannot move a rank-1 hit, so the tier could not have
+reported harm regardless of the weight.
+
+**What fixed it.** Not more labels — a metric that uses none. `run_eval` now
+prints the median review count of everything returned and the share under 1,000
+reviews. No ground truth, no query authorship, so neither bias can reach it. It
+priced the weight immediately: median returned goes 65 → 165 → 4,021 reviews at
+w = none → 0.2 → 1.0, and under-1k share 79% → 70% → 23%. Core recall bought per
+point of tail surrendered is 0.74 at w=0.2 and 0.17 at w=0.4, so **0.20 is the
+knee of the curve**, not just the cautious pick it was shipped as. The tier is
+renamed `specific` — it does measure something real, whether a detailed
+description finds its one game, just not what it was named for. See
+failures.md #27.
+
+Consequence: a labelled tier is only as unbiased as its *sampling*, and
+target-first query writing does nothing about that — it fixes bias in choosing
+queries, not in choosing targets. Where a counter-metric can be computed without
+labels, prefer it; it cannot be talked into agreeing with you.
+
+---
+
 ## 2026-09-05 — The eval wanted a popularity weight that deletes the long tail
 
 **What broke.** Adding a prominence term to ranking worked, and the sweep then

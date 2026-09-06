@@ -145,3 +145,147 @@
 - query: Rätselspiel mit Portalen
   lang: de
   expect: [620, 257510]               # Portal 2, The Talos Principle
+
+# --------------------------------------------------- specific description ----
+# `tier: specific` marks long descriptive queries with exactly ONE right answer.
+# `core` above is the opposite: short genre labels ("city builder") whose ground
+# truth names 2-3 famous games out of hundreds that would satisfy the query, so
+# core recall understates quality - a correct but unlisted answer scores zero.
+# The two tiers are NOT comparable to each other. Compare a tier against itself
+# across configs.
+#
+# THIS TIER IS NOT THE LONG TAIL, which is what it was built for. It was meant
+# to hold games a popularity weight would delete, sampled at 50-5,000 reviews.
+# It does not: every target below lands in the 93rd-98th percentile of the
+# corpus by review count, median 97.1. Two mistakes, both mine:
+#
+#   1. sample_longtail.sql used DISTINCT ON (tags[1]) ORDER BY total_reviews
+#      DESC, which returns the MOST-reviewed game per tag within the band - the
+#      top edge of the tail rather than the tail. I then picked the ones I
+#      recognised, biasing it further up.
+#   2. The queries were written while reading each game's short_description,
+#      which is part of embed_text. A near-paraphrase puts the target at cosine
+#      rank ~1, where the popularity term is arithmetically too small to shift
+#      it, so this tier reports "no harm" by construction.
+#
+# Measured: recall here RISES with the popularity weight (54.5% -> 68.2% between
+# w=0.2 and w=1.0) while the median returned result climbs from 165 reviews to
+# 4,021. The tier cannot see the cost of the thing it was built to police. The
+# tail-cost counter-metric in run_eval.py answers that instead, because it needs
+# no labels and no query authorship. This tier still answers a real question:
+# whether a detailed description finds the one game it describes.
+#
+# WRITTEN TARGET-FIRST - each game was sampled first and the query written
+# afterwards without looking at what search returns. That removed the bias in
+# query selection and did nothing about the bias in target selection. See
+# failures.md #26.
+
+- query: browsing a fake 1990s internet and reporting what you find
+  lang: en
+  tier: specific
+  expect: [844590]                    # Hypnospace Outlaw
+
+- query: peaceful climbing game with no enemies, just the ascent
+  lang: en
+  tier: specific
+  expect: [1977170]                   # Jusant
+
+- query: riding a bike down a mountain trail, no combat
+  lang: en
+  tier: specific
+  expect: [711540]                    # Lonely Mountains: Downhill
+
+- query: quiet game about plants slowly overgrowing ruins
+  lang: en
+  tier: specific
+  expect: [1372320]                   # Cloud Gardens
+
+- query: running a small cafe full of cats
+  lang: en
+  tier: specific
+  expect: [1354830]                   # Cat Cafe Manager
+
+- query: playing as a mouse sneaking through a ruined castle
+  lang: en
+  tier: specific
+  expect: [417290]                    # Ghost of a Tale
+
+- query: a witch gathering ingredients and brewing curses in a fairytale wood
+  lang: en
+  tier: specific
+  expect: [729000]                    # Wytchwood
+
+- query: first person puzzle where standing in the shadows kills you
+  lang: en
+  tier: specific
+  expect: [994140]                    # Lightmatter
+
+- query: puzzle game about programming little office workers
+  lang: en
+  tier: specific
+  expect: [375820]                    # Human Resource Machine
+
+- query: victorian explorers losing their minds on an expedition
+  lang: en
+  tier: specific
+  expect: [358130]                    # Curious Expedition
+
+- query: building a city on floating platforms after a nuclear war
+  lang: en
+  tier: specific
+  expect: [809140]                    # Cliff Empire
+
+- query: automating a medieval town with conveyor belts over hills
+  lang: en
+  tier: specific
+  expect: [860890]                    # Factory Town
+
+- query: deckbuilder where you fight using dice instead of cards
+  lang: en
+  tier: specific
+  expect: [1755830]                   # Astrea: Six-Sided Oracles
+
+- query: turn based tactics roguelike set in a gladiator arena
+  lang: en
+  tier: specific
+  expect: [1668690]                   # Alina of the Arena
+
+- query: noir shooter with vampires and slow motion gunfights
+  lang: en
+  tier: specific
+  expect: [1546310]                   # El Paso, Elsewhere
+
+- query: creatures from medieval manuscript margins fighting turn by turn
+  lang: en
+  tier: specific
+  expect: [957960]                    # Inkulinati
+
+- query: gemütliches Spiel, in dem man als Bär eine Pension führt
+  lang: de
+  tier: specific
+  expect: [1136370]                   # Bear and Breakfast
+
+- query: Rätselspiel, bei dem man die Regeln selbst erraten muss
+  lang: de
+  tier: specific
+  expect: [1299400]                   # Understand
+
+- query: Puzzlespiel, in dem man Eisenbahnstrecken baut
+  lang: de
+  tier: specific
+  expect: [602320]                    # Train Valley 2
+
+- query: ruhiges Spiel übers Fotografieren in schöner Landschaft
+  lang: de
+  tier: specific
+  expect: [1749860]                   # Lushfoil Photography Sim
+
+- query: Detektivspiel, in dem man Szenen beobachtet und Lücken füllt
+  lang: de
+  tier: specific
+  expect: [2716400]                   # The Rise of the Golden Idol
+
+- query: Monster sammeln und endlos Dungeons erkunden
+  lang: de
+  tier: specific
+  expect: [1289810]                   # Siralim Ultimate
