@@ -4,6 +4,89 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-06 — Doubled the eval, and it took back two of my claims
+
+**What broke.** The arctic-vs-qwen3 result was split — arctic +13.7 on
+`specific`, −7.2 on `core`, level everywhere else — and at n=22 per tier that is
+two or three queries deciding an embedding model. Not a result, an anecdote.
+
+**What I tried.** Doubled both descriptive tiers to 44 and re-ran: 118 queries,
+German 27. Two things fell out that I had not gone looking for. `specific` and
+`tail` were supposed to be a controlled pair differing only in target
+popularity, which is the whole basis of failures.md #28 — but `tail` came from a
+sampler and `specific` was hand-picked, so sampling method varied too. And
+German recall jumped 31.0% → 42.6% just from adding six queries, which is not how
+a language property behaves.
+
+**What fixed it.** `sample_specific.sql`, a mirror of the tail sampler differing
+only in the review band, so the pair is now controlled in fact rather than in
+the write-up. And a tier-by-language matrix in `run_eval`, because the aggregate
+EN/DE rows were measuring query mix as much as language: German is 37% `core`
+queries against English's 22%, and per tier the gap is 4.2 / 30.2 / 12.5 points
+against an aggregate of 24.3. Same data, four answers.
+
+The part worth keeping is that the expansion was not meant to audit anything. It
+was meant to add statistical power for a model decision, and on the way it
+falsified one claim I had written as settled and corrected another I had stated
+too confidently. Meanwhile #28's actual finding — `tail` flat then collapsing
+while `specific` climbs — reproduced exactly on 22 queries written afterwards
+against a different model, which is far better evidence than the original run.
+Growing a test set is not only a power exercise; it re-runs every conclusion the
+old set produced.
+
+## 2026-09-06 — A 400 from Ollama, with the reason thrown away
+
+**What broke.** The arctic re-embed died at 21% (27,648 of 130,651) on a bare
+`httpx.HTTPStatusError: 400 Bad Request` from `/api/embed`. No reason in the
+traceback, because `raise_for_status()` discards the response body.
+
+**What I tried.** Hunted for a poisoned row first, which was wrong twice over.
+`max(length(embed_text))` is 694 characters and `max(octet_length())` is 1,091
+bytes, so with byte fallback no row can exceed ~1,100 tokens. Re-ran the exact
+uncommitted page — the commit is per 1,024 rows, so the failing page was still
+`NULL` and perfectly reproducible — and all eight 128-row chunks passed. Only
+then read `%LOCALAPPDATA%\Ollama\server.log`, which had said it all along:
+`input (3002 tokens) is too large to process. increase the physical batch size
+(current batch size: 2048)`. Ollama packs several inputs into one server task
+and checks the PACKED count against `n_ubatch`; the tasks either side of the
+rejected one were 114 and 134 tokens.
+
+**What fixed it.** Three things, in the order they matter. `_reason()` now pulls
+Ollama's own message into the exception, which is the fix for the hour rather
+than for the bug. `options.num_batch` (new setting, 4096) raises the ceiling to
+the model's context — verified in the log as `n_ubatch = 4096`. And `_post_batch`
+halves a rejected batch and retries, with a WARNING per split, so a 30-minute
+job survives a transient instead of dying at 21%.
+
+The retry logic was covered by a stub rather than the real server, because the
+packing anomaly cannot be summoned on demand: 32 inputs at a deliberately low
+ceiling each got their own task and sailed through. What the stub verified was
+the recursion, the ordering and the terminal raise, not the condition that
+triggers them.
+
+**Then it fired in production, on a cause I had not predicted.** At 98% of the
+resumed run (101,376 of 103,003):
+
+    Ollama rejected a batch of 128 (Post "http://127.0.0.1:53372/tokenize":
+    dial tcp: bind: An operation on a socket could not be performed because the
+    system lacked sufficient buffer space or because a queue was full.).
+    Retrying as 64 + 64.
+
+That is Windows ephemeral-port exhaustion inside Ollama's own internal tokenize
+call after ~130k requests in 17 minutes — nothing to do with batch sizes, and
+`num_batch` would not have touched it. The run finished clean: 130,651 vectors,
+0 pending, 0 zero-vectors.
+
+Which is the useful lesson. The targeted fix addressed the cause I had
+diagnosed; the general-purpose net caught a different one nobody had thought of,
+17 minutes into a job that would otherwise have died at 98%. When a specific fix
+and a broad one are both cheap, the broad one is what pays.
+
+The lesson is the boring one. The explanation was one layer away in a log file
+the whole time, and I spent the detour bisecting a corpus that could not
+physically contain the reported input. An exception that swallows the body turns
+a one-line diagnosis into an hour of guessing.
+
 ## 2026-09-06 — The long tail tier works, and half of the fix was theatre
 
 **What broke.** Nothing, this time — which is why it is worth writing down. The

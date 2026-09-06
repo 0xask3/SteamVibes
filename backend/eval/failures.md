@@ -1004,3 +1004,72 @@ never one query set against another.
 
 Sixth falsified hypothesis (#19, #20, #25, #26, #27), and the first one where
 the headline fix succeeded while the reasoning behind half of it was wrong.
+
+### 29. The eval doubled, and two of #28's claims did not survive it (2026-09-06)
+
+The arctic-vs-qwen3 comparison came back split - arctic ahead on `specific` by
+13.7 points, behind on `core` by 7.2, level on `tail`, German and the
+counter-metric. At n=22 per tier one query is 4.5 points, so the entire verdict
+rested on two or three queries. Rather than ship a model on that, the eval grew:
+**118 queries now - `core` 30, `specific` 44, `tail` 44, German 27.** Targets
+verified present, embedded and above threshold before any query was written.
+
+**The good news first: #28's shape reproduced out of sample.** The second 22
+tail queries were written after that entry, against a different embedding model,
+from tags the first batch had not used. They behave the same way:
+
+| w | tail (22, qwen3) | tail (44, arctic) | specific (44) | under 1k |
+| --- | --- | --- | --- | --- |
+| none | 63.6% | 75.0% | 75.0% | 84% |
+| 0.10 | 63.6% | 75.0% | 79.5% | 80% |
+| 0.20 | 63.6% | 72.7% | 79.5% | 75% |
+| 0.40 | 59.1% | 70.5% | 86.4% | 64% |
+| 1.00 | 36.4% | 47.7% | 88.6% | 35% |
+| 2.00 | 9.1% | 6.8% | 88.6% | 11% |
+
+Flat, then falling, while `specific` climbs monotonically to 88.6%. A finding
+that survives new queries and a new model is worth more than the original
+measurement was.
+
+**Claim that was overstated: "the only variable that differs is target
+popularity."** #28 said the `specific`/`tail` contrast was controlled. It was
+not, quite: `tail` came from `sample_longtail.sql` and `specific` was
+hand-picked, so sampling method varied alongside popularity. `sample_specific.sql`
+now mirrors the tail sampler exactly - same `DISTINCT ON`, same `md5(app_id)`
+ordering, same percentile column, only the review band differs (5,000-200,000
+against 30-300). The 22 new `specific` targets came from it and land at an
+average 97.3rd percentile against the hand-picked batch's 97.1, so the claim is
+now true rather than merely plausible. It was written as though it were already
+true, which is the actual mistake.
+
+**Claim that was wrong: the EN/DE split measures language.** German recall moved
+from 31.0% to 42.6% purely from adding six queries, which is not how a language
+property behaves. The two sets do not have the same tier mix - German is 37%
+`core` queries against English's 22%, and `core` scores about a quarter of what
+the other tiers do. Per tier, on arctic at w=0.20:
+
+| tier | EN | DE | gap |
+| --- | --- | --- | --- |
+| core | 19.2% (20) | 15.0% (10) | 4.2 |
+| specific | 85.7% (35) | 55.6% (9) | 30.2 |
+| tail | 75.0% (36) | 62.5% (8) | 12.5 |
+| aggregate | 66.8% (91) | 42.6% (27) | 24.3 |
+
+Same data, four different answers. "German is ~20 points behind" was a statement
+about the query mix as much as about German. `run_eval` prints this matrix now,
+with the aggregate rows kept but labelled as not a language measurement. The
+cells are small - 8 to 10 German queries each, so one query is 10-12 points -
+and a single row is a hint, not a result.
+
+**Still unresolved: which model ships.** Expanding the eval invalidated the qwen3
+baseline, because a tier's composition changed and recall is not comparable
+across query sets - the same reason the counter-metric is only comparable within
+a fixed set (#28). Settling it needs qwen3 re-embedded and run on all 118. That
+cost was accepted deliberately: the alternative was picking a model on three
+queries.
+
+**Noted for whenever the weight is revisited:** arctic's largest
+no-tail-cost weight is 0.10, not qwen3's 0.20 - it loses 2.3 tail points at 0.20
+on 44 queries, and lost 4.6 on 22. The optimal weight is model-dependent even
+under RRF, which is rank-based and was adopted partly because it was expected not
+to be. Acting on that is a search-ranking change and belongs in plan mode.

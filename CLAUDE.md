@@ -110,7 +110,28 @@ Two categories, and I'll say which one we're in at the top of each session:
   `http://localhost:5173`, because `http://127.0.0.1:5173` refuses the
   connection outright. Both are in the API's CORS origin list for that reason.
 - The embedding client holds one long-lived `httpx.Client` and calls
-  `/api/embed` with a batch. One-text-per-request is 30x slower.
+  `/api/embed` with a batch. One-text-per-request is 30x slower. Never let an HTTP error
+  from Ollama reach the caller without its body: `raise_for_status()` drops the
+  one line that explains it, and a bare 400 cost an hour of bisecting a corpus
+  whose longest row is 1,091 bytes. `_reason()` exists for that.
+- Ollama packs several embed inputs into ONE server task and checks the packed
+  token count against the physical batch, so an ordinary batch can be rejected
+  while every text in it is tiny - it died on a 3,002-token task between rows of
+  114 and 134 (NOTES.md 2026-09-06). `EMBED_NUM_BATCH=4096` raises that ceiling
+  to the context; `_post_batch` halves a rejected batch and retries as the net
+  above it. The WARNING per split is load-bearing: a silent split would hide a
+  model that cannot handle the corpus at all.
+- `verify_corpus_model()` runs before the first embed call in the CLI and in
+  `run_eval`. `EMBED_MODEL` disagreeing with `games.embedding_model` is invisible
+  at every other layer: arctic, bge-m3, qwen3-embedding and the column are all
+  1024 dims, so the dimension check inside `embed_texts` passes and the query is
+  simply compared against documents from a different space - no exception, no
+  empty result, just quietly worse rankings. Switching models is one `.env` line
+  plus `alembic downgrade 0006`, `embed_all --reload`, `alembic upgrade head`;
+  stopping between any two of those leaves the halves disagreeing, and the eval
+  would report the difference as a model result. A half-finished re-embed trips
+  it too, which is correct. Deliberately NOT wired into `app/main.py` or
+  `app/search.py` - that is a search-path edit and belongs in plan mode.
 - `uv run alembic check` belongs beside mypy and ruff. It is the only one of
   the three that compares the code against the real database. It caught that
   `ix_games_embedding_hnsw` existed in Postgres but not in `models.py`, which
@@ -270,18 +291,32 @@ than requested (measured 4 of 10 at `--threshold 5000`). It costs latency —
 ~150ms at threshold 10, ~1450ms at 5000. Watch this when Weekend 2 stacks
 filters.
 
-Failure modes: `backend/eval/failures.md`, 28 documented with mechanisms. That
+Failure modes: `backend/eval/failures.md`, 29 documented with mechanisms. That
 file is the raw material for `eval/queries.yaml` and for the README's "what
 does not work" section.
 
-Eval: 74 labelled queries in three tiers - `core` (30, short genre labels
-answered by famous games), `specific` (22, detailed descriptions with one right
-answer above the 93rd percentile) and `tail` (22, the same but the answer has
-36-293 reviews). The tiers are NOT comparable to each other: core recall
+Eval: 118 labelled queries in three tiers - `core` (30, short genre labels
+answered by famous games), `specific` (44, detailed descriptions with one right
+answer above the 93rd percentile) and `tail` (44, the same but the answer has
+30-300 reviews). `specific` and `tail` come from mirror samplers
+(`sample_specific.sql`, `sample_longtail.sql`) that differ only in review band,
+so the pair is a controlled contrast in target popularity - hand-picking either
+one breaks that. The tiers are NOT comparable to each other: core recall
 understates quality because a correct-but-unlisted answer scores zero, and tail
-recall includes four targets pure cosine cannot retrieve at all, left in
+recall includes targets pure cosine cannot retrieve at all, left in
 deliberately. Compare a tier against itself across configs, and read `tail` plus
 the tail-cost counter-metric before believing any ranking number.
+
+Recall is not comparable across query SETS either, only across configs on a
+fixed set. Expanding the eval from 74 to 118 invalidated every number measured
+on the old set, including the qwen3 model baseline. Budget a re-run of anything
+you want to keep comparing before adding queries.
+
+The aggregate EN/DE rows are not a language measurement: German is 37% `core`
+queries against English's 22%, so a chunk of any gap is tier mix. `run_eval`
+prints a tier-by-language matrix - read that. On arctic at w=0.20 the aggregate
+gap was 24.3 points and the per-tier gaps were 4.2 / 30.2 / 12.5. See
+failures.md #29.
 
 ## Carry into Weekend 2 (both cheap, both found by testing)
 1. DONE. Migration `0004` added `required_age` and `games.tags text[]` with a
@@ -305,10 +340,20 @@ which came last or joint-last at four of five review thresholds. Query/document
 prefixes are keyed on the model name in `app/embedding.py`, which also lands the
 nomic prefixes failures.md #19 wanted.
 
-The choice is threshold-dependent and provisional: qwen3 wins below ~1,000
-reviews, arctic wins above it by 19 points. Ranking now has the popularity term
-that #24 asked for, so the re-measure it was waiting on is due - one `--reload`
-and one sweep, ~30 min.
+The re-measure that #25 said was due HAS NOW RUN, and did not settle it. **The
+corpus is currently embedded with `snowflake-arctic-embed2` and `.env` points at
+it** - that is the live state, not a decision. On the old 74-query set arctic
+was ahead on `specific` by 13.7 points, behind on `core` by 7.2, and level on
+`tail`, German and the counter-metric: a split verdict resting on two or three
+queries per tier. The eval was doubled to 118 instead of shipping on that, which
+invalidated the qwen3 baseline it would have been compared against.
+
+To finish: re-embed qwen3 (`alembic downgrade 0006`, flip EMBED_MODEL,
+`embed_all --reload`, `alembic upgrade head`, ~30 min) and run all 118. Until
+then no model claim in this file is current. Arctic's `core` weakness is partly
+real and partly the tier's incomplete ground truth - it returns Cities: Skylines
+II and Roguebook, which are correct and unlisted, alongside a 44-review
+50%-positive "Megacity Builder", which is not.
 
 Ranking: `rrf w=0.20` over a 200-candidate pool. recall@10 is 25.0 / 26.7 /
 30.0 / 41.1 / 42.2% across the five thresholds, from 18.3 / 22.8 / 26.7 / 38.3 /

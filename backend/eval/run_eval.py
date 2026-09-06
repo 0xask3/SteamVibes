@@ -108,6 +108,7 @@ def main() -> None:
     elapsed: list[float] = []
     misses: list[tuple[Case, set[int]]] = []
     tiers: dict[str, list[float]] = {"core": [], "specific": [], "tail": []}
+    cells: dict[tuple[str, str], list[float]] = {}
     returned_reviews: list[int] = []
 
     mode_label = "parsed" if args.parse else "semantic only"
@@ -143,6 +144,7 @@ def main() -> None:
         recall, missed = case.recall([r.app_id for r in response.results], args.limit)
         scores[case.lang].append(recall)
         tiers[case.tier].append(recall)
+        cells.setdefault((case.tier, case.lang), []).append(recall)
         returned_reviews.extend(r.total_reviews for r in response.results)
         if missed:
             misses.append((case, missed))
@@ -180,6 +182,27 @@ def main() -> None:
             row(f"{tier}, n={len(tiers[tier])}", tiers[tier])
 
     row("overall", scores["en"] + scores["de"])
+
+    # The EN/DE rows above are NOT a language measurement on their own: the two
+    # sets do not have the same tier mix. German is 37% core queries against
+    # English's 22%, and core scores about a quarter of what the other tiers do,
+    # so a chunk of any aggregate gap is composition rather than language. Read
+    # this matrix instead. Measured on arctic at w=0.20 the aggregate gap was
+    # 24.3 points while the per-tier gaps were 4.2 / 30.2 / 12.5 - same data,
+    # three different stories. Cells are small (8-10 German queries per tier),
+    # so one query is 10-12 points here; treat a single row as a hint.
+    print()
+    print(f"{'  by tier and language':<24}{'EN':>14}{'DE':>14}{'gap':>9}")
+    for tier in ("core", "specific", "tail"):
+        en, de = cells.get((tier, "en"), []), cells.get((tier, "de"), [])
+        if not en or not de:
+            continue
+        e, d = statistics.mean(en), statistics.mean(de)
+        label = f"    {tier}"
+        print(
+            f"{label:<24}{e:>8.1%} (n={len(en):>2}){d:>8.1%} (n={len(de):>2}){e - d:>8.1%}"
+        )
+    print()
 
     # Counter-metric, and the honest one. recall@k cannot see what a popularity
     # weight DELETES, because ground truth is a list of games somebody thought

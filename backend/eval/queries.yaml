@@ -175,10 +175,15 @@
 # no labels and no query authorship. This tier still answers a real question:
 # whether a detailed description finds the one game it describes.
 #
-# WRITTEN TARGET-FIRST - each game was sampled first and the query written
+# WRITTEN TARGET-FIRST - each game was picked first and the query written
 # afterwards without looking at what search returns. That removed the bias in
 # query selection and did nothing about the bias in target selection. See
 # failures.md #26.
+#
+# The first 22 below were hand-picked, which is why `sample_specific.sql` now
+# exists: it mirrors `sample_longtail.sql` exactly apart from the review band,
+# so the pair differs in target popularity and nothing else. The second 22 came
+# from it. Anything added here should too.
 
 - query: browsing a fake 1990s internet and reporting what you find
   lang: en
@@ -290,31 +295,152 @@
   tier: specific
   expect: [1289810]                   # Siralim Ultimate
 
+# --- second batch, sampled by sample_specific.sql rather than hand-picked ----
+# The first 22 above were chosen by hand, which meant this tier and `tail`
+# differed in more than target popularity, and the "controlled comparison"
+# claimed in failures.md #28 was overstated. These come from the mirror sampler:
+# same DISTINCT ON, same md5 ordering, only the review band differs. They land
+# at an average 97.3rd percentile of the searchable corpus against the
+# hand-picked batch's 97.1, so the tier stays homogeneous.
+
+- query: a toy where you place colourful houses and a town builds itself
+  lang: en
+  tier: specific
+  expect: [1291340]                   # Townscaper
+
+- query: Schachvariante, bei der die Figuren durch die Zeit reisen
+  lang: de
+  tier: specific
+  expect: [1349230]                   # 5D Chess With Multiverse Time Travel
+
+- query: pet sim about raising dogs that mutate into wobbly shapes
+  lang: en
+  tier: specific
+  expect: [1424330]                   # Wobbledogs
+
+- query: Spiel, in dem man freundliche Briefe an Fremde schreibt
+  lang: de
+  tier: specific
+  expect: [1070710]                   # Kind Words
+
+- query: heist game where you smash through every wall to plan the route
+  lang: en
+  tier: specific
+  expect: [1167630]                   # Teardown
+
+- query: hand drawn black and white scenes where you search for hidden people
+  lang: en
+  tier: specific
+  expect: [435400]                    # Hidden Folks
+
+- query: murder mystery drawn like a medieval illuminated manuscript
+  lang: en
+  tier: specific
+  expect: [1205520]                   # Pentiment
+
+- query: hacking game played through a real looking terminal
+  lang: en
+  tier: specific
+  expect: [365450]                    # Hacknet
+
+- query: driving a station wagon through a supernatural exclusion zone
+  lang: en
+  tier: specific
+  expect: [1458140]                   # Pacific Drive
+
+- query: multiplayer chatroom where everyone fishes together as animals
+  lang: en
+  tier: specific
+  expect: [3146520]                   # WEBFISHING
+
+- query: first person game where a narrator argues with the choices you make
+  lang: en
+  tier: specific
+  expect: [221910]                    # The Stanley Parable
+
+- query: running an item shop and haggling with the adventurers who buy from you
+  lang: en
+  tier: specific
+  expect: [70400]                     # Recettear
+
+- query: raising a daughter over years by choosing her lessons and hobbies
+  lang: en
+  tier: specific
+  expect: [1669980]                   # Volcano Princess
+
+- query: investigating a cold case by exploring an abandoned town and reading documents
+  lang: en
+  tier: specific
+  expect: [624270]                    # The Painscreek Killings
+
+- query: hunting monsters and cooking them into meals that grant abilities
+  lang: en
+  tier: specific
+  expect: [799640]                    # Dungeon Munchies
+
+- query: Spiel, in dem man als Katze durch eine Stadt streift und Unfug macht
+  lang: de
+  tier: specific
+  expect: [1177980]                   # Little Kitty, Big City
+
+- query: arena shooter about surviving as long as possible against endless demons
+  lang: en
+  tier: specific
+  expect: [422970]                    # Devil Daggers
+
+- query: working as an intern in a totalitarian ministry and spying on colleagues
+  lang: en
+  tier: specific
+  expect: [761620]                    # Beholder 2
+
+- query: reconstructing a disappearance from fragments of remembered testimony
+  lang: en
+  tier: specific
+  expect: [2676840]                   # No Case Should Remain Unsolved
+
+- query: brewing potions and haggling to pay off an inherited debt
+  lang: en
+  tier: specific
+  expect: [1874490]                   # Potionomics
+
+- query: hitchhiking towards the border as a series of different teenagers
+  lang: en
+  tier: specific
+  expect: [1466640]                   # Road 96
+
+- query: top down extraction shooter in an eastern european wasteland
+  lang: en
+  tier: specific
+  expect: [1782120]                   # ZERO Sievert
+
 # ------------------------------------------------------------- long tail ----
 # `tier: tail` is what the `specific` block above was supposed to be, and the
 # reason it exists is in that block's header: every `core` and `specific` target
 # sits above the 93rd percentile of the corpus by review count, so recall on
 # them rises with the popularity weight no matter what the weight costs. These
-# 22 targets have 36-293 reviews - the 37th-75th percentile of the SEARCHABLE
+# 44 targets have 30-300 reviews - the 37th-75th percentile of the SEARCHABLE
 # corpus, median 57th, against `specific`'s 97th. Sampled by
 # sample_longtail.sql after it was fixed to order on md5(app_id) instead of
 # total_reviews DESC. Read that file's header before adding to this list.
 #
-# IT WORKS. Swept at k=60 over a 200-candidate pool:
+# IT WORKS, and the shape held up out of sample. The first 22 queries produced
+# it on qwen3; the second 22 were written later, against a different embedding
+# model, and reproduced it. Both swept at k=60 over a 200-candidate pool:
 #
-#     w       core    specific   tail     median revs   under 1k
-#     none   18.3%      54.5%    63.6%             65        81%
-#     0.10   18.3%      54.5%    63.6%             79        78%
-#     0.20   25.0%      54.5%    63.6%            138        73%
-#     0.40   26.7%      59.1%    59.1%            395        63%
-#     1.00   31.1%      68.2%    36.4%          3,306        28%
-#     2.00   35.6%      68.2%     9.1%          8,219         8%
+#     w      tail (22, qwen3)   tail (44, arctic)   specific (44)   under 1k
+#     none         63.6%              75.0%             75.0%          84%
+#     0.10         63.6%              75.0%             79.5%          80%
+#     0.20         63.6%              72.7%             79.5%          75%
+#     0.40         59.1%              70.5%             86.4%          64%
+#     1.00         36.4%              47.7%             88.6%          35%
+#     2.00          9.1%               6.8%             88.6%          11%
 #
-# `specific` RISES 54.5 -> 68.2 across the same sweep that takes `tail` from
-# 63.6 to 9.1. Same query style, same one-right-answer construction, same
-# author, same day. The only variable that differs is how popular the targets
-# are, which is what makes this a controlled result rather than a second guess.
-# w=0.20 is the largest weight that costs the tail nothing at all.
+# `specific` RISES to 88.6 across the same sweep that takes `tail` from 75.0 to
+# 6.8. Same query style, same one-right-answer construction, same author, same
+# sampler - the only variable that differs is how popular the targets are. That
+# is what makes it a controlled result, and it is only true now that BOTH tiers
+# come from a sampler; when this was first written `specific` was hand-picked
+# and the claim was overstated. See failures.md #29.
 #
 # WHAT ACTUALLY FIXED IT, because it was not what I expected. Two mistakes made
 # the `specific` tier useless (see its header). Only the first was fixed here:
@@ -450,3 +576,117 @@
   lang: de
   tier: tail
   expect: [1933370]                   # Mark of the Deep
+
+# --- second batch, same sampler, tags not already used above ----------------
+# Average 56.1st percentile of the searchable corpus against the first batch's
+# 56.7, so the tier stays homogeneous. Target-first from the sampler, as above.
+
+- query: beat em up where you defend your room from intruders with traps
+  lang: en
+  tier: tail
+  expect: [1179890]                   # Pull Stay
+
+- query: Puzzlespiel, in dem man Vögel ordentlich in Formen einpasst
+  lang: de
+  tier: tail
+  expect: [2707110]                   # Birds Organized Neatly
+
+- query: platformer that teaches you html and css
+  lang: en
+  tier: tail
+  expect: [502210]                    # Super Markup Man
+
+- query: narrative game about a car balanced on the edge of a cliff
+  lang: en
+  tier: tail
+  expect: [706130]                    # Far from Noise
+
+- query: Pixel-Aufbauspiel über das Führen eines japanischen Restaurants
+  lang: de
+  tier: tail
+  expect: [1952170]                   # Cafeteria Nipponica
+
+- query: lemmings style puzzle about stopping robots walking to their death
+  lang: en
+  tier: tail
+  expect: [1745800]                   # Doom Work
+
+- query: puzzle game about redirecting beams of light through a machine
+  lang: en
+  tier: tail
+  expect: [1257850]                   # SOLAS 128
+
+- query: world war two submarine game hunting convoys in the atlantic
+  lang: en
+  tier: tail
+  expect: [365260]                    # Crash Dive
+
+- query: first person movement game about wallrunning and strafe jumping
+  lang: en
+  tier: tail
+  expect: [1966930]                   # Ballistic Zen
+
+- query: horror game set in a world where ai replaced writers
+  lang: en
+  tier: tail
+  expect: [3058940]                   # Backspace Backspace Backspace
+
+- query: game where you build spells with a visual programming system
+  lang: en
+  tier: tail
+  expect: [1482640]                   # Nurose
+
+- query: arcade racing about wrecking cars like old destruction derby games
+  lang: en
+  tier: tail
+  expect: [785760]                    # Crumple Zone
+
+- query: Nachtschicht, in der man Überwachungskameras auf Anomalien prüft
+  lang: de
+  tier: tail
+  expect: [2358620]                   # Spectator 2
+
+- query: rhythm game that turns your keyboard into a chiptune instrument
+  lang: en
+  tier: tail
+  expect: [372690]                    # Chiptune Champion
+
+- query: survival game where you evolve from a single celled organism
+  lang: en
+  tier: tail
+  expect: [1839930]                   # Lifecraft
+
+- query: delivering noodles on a hoverbike for the afterlife
+  lang: en
+  tier: tail
+  expect: [2014420]                   # Death Noodle Delivery
+
+- query: one button flappy game about kissing
+  lang: en
+  tier: tail
+  expect: [982350]                    # Mon Amour
+
+- query: social deduction with survivors trapped in a snowy cabin
+  lang: en
+  tier: tail
+  expect: [1382190]                   # Killer in the cabin
+
+- query: sokoban puzzle about pushing alien snails around
+  lang: en
+  tier: tail
+  expect: [1214850]                   # Snaliens
+
+- query: first person stealth about a thief creeping through houses in the dark
+  lang: en
+  tier: tail
+  expect: [1355650]                   # Filcher
+
+- query: arcade game where you type words to destroy enemies
+  lang: en
+  tier: tail
+  expect: [1288410]                   # Outshine
+
+- query: build a dungeon and command demons against invading heroes
+  lang: en
+  tier: tail
+  expect: [2909910]                   # Underworld Overseer
