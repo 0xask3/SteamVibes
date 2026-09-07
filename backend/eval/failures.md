@@ -1890,3 +1890,82 @@ config - and that is a different and much smaller quantity than the uncertainty
 in a difference between two configs. Reproducible is not the same as
 distinguishable. Run the paired test before writing the table, not after being
 challenged on it.
+
+---
+
+### 38. The hallucination checker hallucinated, three separate ways (2026-09-08)
+
+**The feature is a one-line "why this matches" per result; the deliverable is
+the discard rate.** An LLM asked to justify a search result will claim a game is
+`Souls-like` because the sentence reads better that way, and a plausible
+sentence attached to a real game is the hardest kind of wrong to notice - it
+looks exactly like the feature working. So `app/explain.py` verifies every claim
+against `games.tags`, discards what fails, and `eval/run_explain_eval.py` counts
+how often.
+
+Three checks: the returned `app_id` must be one we asked about, `cited_tags`
+must be a subset of the game's real tags, and any tag NAMED IN THE PROSE must be
+one the game has.
+
+**The first honest number was wrong, and only an audit found it.** The initial
+full run reported 7.3% discarded over 590 explanations. Printing eight discards
+next to each game's real tags - rather than trusting the count - showed three of
+the eight were the checker's fault, not the model's:
+
+```
+Garden Life: A Cozy Simulator     PROSE but absent: ['Fishing']
+  "It is a Cozy Farming Sim, but does not include Fishing."
+
+Little Witch in the Woods         PROSE but absent: ['Experience']
+  "Experience the daily life of an apprentice witch..."
+```
+
+Three distinct false-positive classes, all inflating the rate:
+
+1. **Overlapping tags.** `Farming` and `Farming Sim` are both real tags, so "it
+   is a Farming Sim" matched BOTH, and a game carrying only the longer one was
+   accused of citing the shorter. This one fired on the very first live run -
+   two of five *correct* explanations discarded. Fixed by resolving matches
+   longest-first and dropping any span contained in a longer one.
+2. **Negation.** The prompt tells the model to hedge rather than invent, so "but
+   does not include Fishing" is the model OBEYING - and the checker punished it
+   for saying the word. Fixed with a negation guard scoped to the tag's own
+   clause, because "not a puzzle game but it is Souls-like" must still flag
+   `Souls-like`. CLAUDE.md already carried this exact lesson for
+   `wants_singleplayer()`; it applies to any regex over prose, not just queries.
+3. **Sentence-initial capitalisation.** `Experience` is a real tag and also an
+   ordinary verb. Case-sensitivity was supposed to separate them, and it does
+   mid-sentence, but a capital at position 0 is grammar rather than a citation.
+   Single-word tags no longer count sentence-initially; multi-word ones still
+   do, since "Open World games are..." really does name one.
+
+The genuine catches in the same audit were real and worth having: `Random
+Dungeons` (not even a tag in the 452-tag vocabulary - the model invented the
+name), `Bikes` claimed for a game tagged `Automobile Sim`, and `Floating` for a
+city-builder.
+
+**Corrected rate: 4.6% over 590 explanations**, down from 7.3%. The prose
+check alone went from 19 discards to 3, so **16 of the original 43 were the
+checker's fault rather than the model's** - 37% of the reported failures.
+Split: unlisted_tag 2.7% (16), prose_tag 0.5% (3), missing 1.4% (8), median
+2.5s per batch of five. The two untouched checks are bit-identical across the
+runs, which is what says the change did what it claimed and nothing else.
+
+**The self-test is the reason any of this is trustworthy.**
+`run_explain_eval.py --self-test` monkeypatches four known-bad responses -
+citing an absent tag, naming one only in prose, returning an app_id nobody asked
+about, and raising outright - and requires each to be caught. It also runs a
+CONTROL with a real response, because a verifier that rejects everything would
+otherwise score a perfect self-test. All four arms were caught before the first
+real number was taken, which is what made the false positives findable: the
+checker was known to fire correctly on lies, so a suspicious rate had to be
+investigated rather than explained away.
+
+**What to take from this.** A verifier is a measuring instrument and gets
+measured like one. Every one of these three bugs pushed the number UP, which is
+the safe-looking direction - a hallucination rate that reads too high looks like
+diligence and nobody audits it. The check that caught them was printing the
+evidence next to the ground truth and reading eight of them, which took one
+script and less time than writing this entry. The reported number is also a
+FLOOR rather than a measure: it catches invented TAGS, and a model that invents
+a plot detail out of the description passes every check here.

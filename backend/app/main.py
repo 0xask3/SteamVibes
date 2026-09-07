@@ -26,9 +26,16 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.config import settings
 from app.db import session_scope
 from app.embedding import embed_query
+from app.explain import explain
 from app.games import get_game
 from app.query_parser import parse_query
-from app.schemas import GameDetail, SearchRequest, SearchResponse
+from app.schemas import (
+    ExplainRequest,
+    ExplainResponse,
+    GameDetail,
+    SearchRequest,
+    SearchResponse,
+)
 from app.search import search
 
 # The parser degrades to semantic-only search on failure and logs a WARNING
@@ -37,6 +44,7 @@ from app.search import search
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 logger = logging.getLogger(__name__)
+
 
 def _warm_models() -> None:
     """Pull both Ollama models into VRAM before a user asks for them.
@@ -140,6 +148,29 @@ def search_endpoint(request: SearchRequest) -> SearchResponse:
 
     response.parse_ms = parse_ms
     return response
+
+
+@app.post("/api/explain")
+def explain_endpoint(request: ExplainRequest) -> ExplainResponse:
+    """One "why this matches" line per game, verified against the database.
+
+    Separate from /api/search on purpose. Search already costs ~1.1s of
+    reranking, and an LLM call inline would push a first result list past three
+    seconds for something the user has not asked to read yet. The UI renders
+    results, then fills these in.
+
+    The body carries app_ids, NOT games. Name, tags and description are read
+    server-side, because a verifier grading the model against caller-supplied
+    tags would be checking the model against the caller.
+
+    Never 503s. explain() degrades a dead model to a deterministic line marked
+    `grounded=False`, which is the right answer for a feature that only
+    decorates a result list that already works.
+    """
+    explanations, elapsed_ms = explain(
+        request.query, request.app_ids, wanted_tags=request.wanted_tags
+    )
+    return ExplainResponse(explanations=explanations, elapsed_ms=elapsed_ms)
 
 
 @app.get("/api/game/{app_id}")

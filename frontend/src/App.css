@@ -280,3 +280,24 @@
   color: var(--muted);
   font-size: 0.88rem;
 }
+
+/* The generated explanation. Set apart from .blurb, which is Steam's own copy:
+   one is a claim this app is making about the match, the other is marketing
+   text from the store page, and conflating them would be dishonest. */
+.why {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--text);
+  border-left: 2px solid var(--accent, #6ea8fe);
+  padding-left: 0.6rem;
+}
+
+/* A deterministic line, shown because the model's explanation cited a tag the
+   game does not have and was discarded. Muted and dashed so it never reads as
+   something written for this result - see ResultCard.tsx. */
+.why-fallback {
+  color: var(--muted, #8b949e);
+  border-left-style: dashed;
+  font-style: italic;
+}

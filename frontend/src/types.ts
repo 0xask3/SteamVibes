@@ -91,3 +91,32 @@ export interface SearchRequest {
   limit?: number;
   threshold?: number;
 }
+
+/**
+ * One "why this matches" line, after the backend checked it against the
+ * database.
+ *
+ * `grounded: false` means a model DID write something and it was thrown away
+ * for citing a tag the game does not have - `why` is then a deterministic line
+ * built from the game's own tags. The flag has to reach the UI: a canned
+ * sentence presented as an explanation is precisely the failure the
+ * verification exists to prevent.
+ */
+export interface VerifiedExplanation {
+  app_id: number;
+  why: string;
+  grounded: boolean;
+  discard_reason: string | null;
+}
+
+export interface ExplainRequest {
+  query: string;
+  app_ids: number[];
+  /** Only picks which of the game's own tags the fallback line shows. */
+  wanted_tags?: string[];
+}
+
+export interface ExplainResponse {
+  explanations: VerifiedExplanation[];
+  elapsed_ms: number;
+}

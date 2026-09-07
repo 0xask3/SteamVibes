@@ -4,6 +4,45 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-08 — The hallucination checker was the thing hallucinating
+
+**What broke.** Built the grounded-explanation layer: a one-line "why this
+matches" per result, with every claim verified against `games.tags` and anything
+citing a tag the game lacks thrown away. The first full run reported **7.3%**
+discarded over 590 explanations, which is a publishable-looking number and was
+wrong.
+
+**What I tried.** Printed eight discards next to each game's real tags instead
+of trusting the count. Three of the eight were the checker's fault:
+
+```
+"It is a Cozy Farming Sim, but does not include Fishing."   -> flagged Fishing
+"Experience the daily life of an apprentice witch..."       -> flagged Experience
+```
+
+The first is the model DENYING a tag, which the prompt explicitly asks it to do
+rather than invent. The second is a sentence-initial verb that happens to be a
+real tag. A third class had already fired on the very first live run: `Farming`
+and `Farming Sim` are both tags, so "it is a Farming Sim" matched both and a
+game carrying only the longer one was accused of citing the shorter - two of
+five correct explanations discarded.
+
+**What fixed it.** Three guards on the prose scan: overlapping matches resolve
+longest-first, a tag inside a negated clause is a denial rather than a claim
+(scoped to its own clause, so "not a puzzle game but it is Souls-like" still
+flags Souls-like), and a sentence-initial single-word tag is grammar rather than
+a citation. Rate went **7.3% -> 4.6%**, with the prose check falling from 19
+discards to 3 and the two untouched checks bit-identical across runs.
+
+Consequences: 16 of the original 43 "hallucinations" were mine. Every one of the
+three bugs pushed the number UP, which is the direction that looks like
+diligence and therefore never gets audited. The self-test - four known-bad
+responses plus a truthful control - is what made the rate worth doubting rather
+than explaining away, because the checker was already known to fire correctly on
+actual lies. See failures.md #38.
+
+---
+
 ## 2026-09-07 — The reranker could not be served, twice, and torch lied about why
 
 **What broke.** BUILD_PLAN's Weekend 4 item 1 says `ollama pull

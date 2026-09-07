@@ -1,4 +1,4 @@
-import type { SearchResult } from "./types";
+import type { SearchResult, VerifiedExplanation } from "./types";
 
 /** "Free", "$9.99", or "—" when the source had no price at all. */
 function price(result: SearchResult): string {
@@ -7,7 +7,13 @@ function price(result: SearchResult): string {
   return result.list_price_usd ? `$${result.list_price_usd}` : "—";
 }
 
-export function ResultCard({ result }: { result: SearchResult }) {
+export function ResultCard({
+  result,
+  explanation,
+}: {
+  result: SearchResult;
+  explanation?: VerifiedExplanation;
+}) {
   return (
     <article className="card">
       <header className="card-head">
@@ -53,6 +59,26 @@ export function ResultCard({ result }: { result: SearchResult }) {
             </span>
           ))}
         </div>
+      )}
+
+      {/* Visually distinct when it is NOT model-written. `grounded: false`
+          means an explanation was generated and then thrown away for citing a
+          tag this game does not have, and the line below is a deterministic
+          fallback built from the real tags. Showing it identically would pass
+          off a canned sentence as an explanation, which is the exact failure
+          the verification exists to catch - so the class differs and the
+          tooltip says which it is. */}
+      {explanation && (
+        <p
+          className={explanation.grounded ? "why" : "why why-fallback"}
+          title={
+            explanation.grounded
+              ? "Written by the local model, and every tag it cites was checked against this game's record"
+              : `The model's explanation was discarded (${explanation.discard_reason}). This line is built from the game's own tags.`
+          }
+        >
+          {explanation.why}
+        </p>
       )}
 
       {result.short_description && <p className="blurb">{result.short_description}</p>}

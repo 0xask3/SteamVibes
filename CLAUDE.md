@@ -50,6 +50,10 @@ Two categories, and I'll say which one we're in at the top of each session:
   one wearing the model's label.
 - `cd backend && uv run python -m eval.run_parse_eval` — for PARSER changes.
   Recall cannot referee those; see the Eval section.
+- `cd backend && uv run python -m eval.run_explain_eval` — explanation
+  hallucination rate. `--self-test` FIRST, and after any verifier change: it
+  feeds four known-bad responses plus a truthful control, and a checker that has
+  never gone red is not known to work.
 - `cd frontend && npm run dev`
 - Refreshing `data/games.json`: follow `backend/ingest/README.md`. In short —
   `alembic upgrade head`, `load_games --reload`, `embed_all`, then the two
@@ -454,6 +458,57 @@ Two categories, and I'll say which one we're in at the top of each session:
   host GPU anyway. `docker compose up` therefore reaches a working API over an
   EMPTY database, which is the honest tradeoff and is documented in README's
   quickstart rather than papered over.
+- The explanation layer's deliverable is the DISCARD RATE, not the sentence.
+  `app/explain.py` writes one "why this matches" line per result and then checks
+  every claim against `games.tags`; anything citing a tag the game lacks is
+  thrown away and replaced by a deterministic line built from the real tags.
+  Three properties make the check mean something and none is optional. The
+  grounding data comes from the DATABASE, never the caller - `/api/explain`
+  takes app_ids, not games, because a verifier fed client-supplied tags is
+  checking the model against the client. A discard is FINAL: no retry, no second
+  call, because retrying until it passes converts a measured failure rate into a
+  hidden latency cost and the failure rate is the product. And `grounded=False`
+  travels to the UI, which renders a fallback line differently and says so on
+  hover - a canned sentence presented as an explanation is the exact failure the
+  verification exists to prevent. See failures.md #38.
+- A VERIFIER IS A MEASURING INSTRUMENT AND GETS MEASURED LIKE ONE. The first
+  full run of the explanation check reported 7.3% hallucinated; an audit that
+  printed eight discards next to each game's real tags found three of the eight
+  were the checker's fault. All three bugs pushed the number UP, which is the
+  safe-looking direction - a hallucination rate that reads too high looks like
+  diligence, and nobody audits diligence. Print the evidence beside the ground
+  truth and read some before publishing a rate.
+- A prose scan over the tag vocabulary needs three guards, each found by audit
+  rather than by reasoning. Overlapping tags resolve LONGEST-FIRST, because
+  `Farming` and `Farming Sim` are both real and "it is a Farming Sim" otherwise
+  matches both. A tag inside a NEGATED clause is a denial, not a claim - the
+  prompt asks the model to hedge rather than invent, so "but does not include
+  Fishing" is obedience, and the guard is scoped to the tag's own clause so
+  "not a puzzle game but it is Souls-like" still flags `Souls-like`. And a
+  SENTENCE-INITIAL single-word tag is grammar rather than a citation:
+  `Experience` is both a real tag and an ordinary verb. Multi-word tags still
+  count there. CLAUDE.md already carried the negation lesson for
+  `wants_singleplayer()`; it applies to any regex over prose.
+- `/api/explain` is a SECOND request, not part of `/api/search`. Search already
+  costs ~1.1s of reranking, and an LLM call inline would hold the whole result
+  list for a sentence nobody has scrolled to. Results render, explanations
+  arrive after, and the frontend swallows their failure entirely - the list is
+  correct and useful without them. Same instinct as the chip path staying
+  model-free.
+- `Explanation`'s field order is load-bearing for the same reason
+  `semantic_query` must be last in `ParsedQuery`: `cited_tags` is declared
+  BEFORE `why`, so the model commits to a tag list and then writes prose
+  consistent with it rather than justifying finished prose. Every field is
+  required by construction - none carries a default - and anything added needs
+  that checked, because an optional property is a grammar branch the model may
+  skip (#33).
+- `run_explain_eval.py --self-test` must pass before any rate from it is
+  believed, and after any change to the verifier. Four arms - an absent tag
+  cited, one named only in prose, an app_id nobody asked about, and the model
+  raising - each must be caught, plus a CONTROL with a real response, because a
+  verifier that rejects everything would otherwise score perfectly. Knowing the
+  checker fires correctly on lies is what made a suspicious rate worth
+  investigating instead of explaining away.
 - Commit per feature, not per session.
 - When something breaks, three lines in `NOTES.md`: what broke, what I
   tried, what fixed it.

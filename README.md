@@ -95,6 +95,10 @@ complaining, and `torch.cuda.is_available()` simply returns `False`.
                      |  Qwen3-Reranker-0.6B on the GPU, and its rank
                      v  replaces rank_cosine in the same sum above
                   top 10
+                     |
+                     |  ...then a SECOND request explains them: one line each
+        /api/explain |  from qwen3.5:9b, every tag it cites checked against
+                     v  games.tags, and 4.6% thrown away for failing that
 ```
 
 Deliberately plain where it can be: no agent loop, no LangChain, one direct HTTP
@@ -241,6 +245,24 @@ fixing them needs a different stage 1, not a better stage 3. They are left in th
 removing the queries that score badly is how a benchmark starts flattering
 itself.
 
+**The explanation layer hallucinates a tag in 4.6% of cases**, which is why
+every one is checked against the database before it is shown. A one-line "why
+this matches" is generated per result, then verified: the tags it cites must be
+tags the game actually has, and so must any tag it names in the prose. A failure
+is discarded outright — no retry — and replaced by a deterministic line built
+from the game's real tags, marked differently in the UI so a canned sentence is
+never passed off as an explanation.
+
+That 4.6% is a floor rather than a measure: it catches invented *tags*, and a
+model that invents a plot detail out of the description passes every check. It
+also started at 7.3%, and the difference was **my** bugs, not the model's —
+auditing eight discards against their games' real tags showed the checker
+punishing the model for denying a tag ("but does not include Fishing"), for a
+sentence-initial verb that happens to be a tag ("Experience the daily life…"),
+and for saying "Farming Sim" when `Farming` is separately a tag. All three
+inflated the number, which is the direction that looks like diligence and
+therefore never gets audited.
+
 **New parser intents cannot go in the prompt.** It is full. Three separate edits
 each silently destroyed a working filter, so intents like "popular" and
 "excluding X" are regexes over the query text instead. The cost is that
@@ -283,7 +305,7 @@ eval is built to resist flattering itself:
   now quoted with a paired-bootstrap interval, and the ones that cross zero are
   reported as crossing zero.
 
-[`backend/eval/failures.md`](backend/eval/failures.md) documents 37 failure modes
+[`backend/eval/failures.md`](backend/eval/failures.md) documents 38 failure modes
 with mechanisms, including several where a conclusion in this repo turned out to
 be wrong and had to be withdrawn — the most recent being a reranker written off
 as bad that turned out to be mis-invoked, and then a claimed win over the

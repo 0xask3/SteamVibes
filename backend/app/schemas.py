@@ -239,3 +239,66 @@ class GameDetail(BaseModel):
     tags: list[str] = Field(default_factory=list)
     genres: list[str] = Field(default_factory=list)
     categories: list[str] = Field(default_factory=list)
+
+
+class Explanation(BaseModel):
+    """One "why this matches" line, and whether it survived verification.
+
+    FIELD ORDER IS LOAD-BEARING, the same way `semantic_query` must be last in
+    ParsedQuery. Ollama emits fields in declaration order, so `cited_tags`
+    before `why` makes the model commit to a tag list and then write prose
+    consistent with it, rather than justifying finished prose after the fact.
+
+    Every field is required by construction - none carries a default. That is
+    deliberate rather than incidental: an OPTIONAL property in a
+    constrained-decoding schema is a grammar branch the model may skip, and a
+    schema generated from Pydantic is optional by accident. Anything added here
+    needs the same check. See failures.md #33.
+    """
+
+    app_id: int
+    cited_tags: list[str]
+    why: str
+
+
+class VerifiedExplanation(BaseModel):
+    """What the API returns: the line, plus whether a model actually wrote it.
+
+    `grounded=False` means the model's explanation cited something the game does
+    not have and was DISCARDED - `why` is then a deterministic line built from
+    the game's own tags. The flag exists so the UI can say which it is showing
+    and the eval can count. A fallback presented as an explanation would be the
+    exact failure this feature is built to avoid.
+    """
+
+    app_id: int
+    why: str
+    grounded: bool
+
+    # Empty when grounded. One of "unknown_app_id", "unlisted_tag",
+    # "prose_tag", "missing" - kept because "4% hallucinated" is three
+    # different bugs with three different fixes, and an aggregate hides which.
+    discard_reason: str | None = None
+
+
+class ExplainRequest(BaseModel):
+    """POST /api/explain body.
+
+    Deliberately carries app_ids and NOT the games themselves. Name, tags and
+    description are looked up server-side, because a verifier that grades the
+    model against client-supplied tags proves nothing at all.
+    """
+
+    query: str
+    app_ids: list[int] = Field(min_length=1, max_length=20)
+
+    # The tags the query asked for, used ONLY to pick which of a game's own tags
+    # the deterministic fallback line shows. Never trusted as ground truth - the
+    # verifier reads `games.tags` from the database - so a caller sending
+    # nonsense here degrades its own fallback text and nothing else.
+    wanted_tags: list[str] = Field(default_factory=list)
+
+
+class ExplainResponse(BaseModel):
+    explanations: list[VerifiedExplanation] = Field(default_factory=list)
+    elapsed_ms: float

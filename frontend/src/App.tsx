@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
 
-import { search } from "./api";
+import { explain, search } from "./api";
 import { chipsFor } from "./chips";
 import { ResultCard } from "./ResultCard";
-import type { ParsedQuery, SearchResponse } from "./types";
+import type {
+  ParsedQuery,
+  SearchResponse,
+  VerifiedExplanation,
+} from "./types";
 import "./App.css";
 
 const EXAMPLES = [
@@ -19,6 +23,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [slow, setSlow] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Keyed by app_id and filled in AFTER results render. A second request, so
+  // the list is not held back by an LLM call for text nobody has scrolled to.
+  const [why, setWhy] = useState<Record<number, VerifiedExplanation>>({});
 
   /**
    * A warm search is ~0.8s. A cold one is ~22s, because Ollama has to page
@@ -44,7 +51,23 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      setResponse(await search({ query: text, parsed }));
+      const result = await search({ query: text, parsed });
+      setResponse(result);
+      // Cleared before the new ones arrive, or the previous search's
+      // explanations sit under the new search's games for a second.
+      setWhy({});
+      if (result.results.length > 0) {
+        // Deliberately not awaited into the loading state: results are already
+        // on screen and useful. explain() swallows its own failures.
+        void explain({
+          query: result.parsed.semantic_query,
+          app_ids: result.results.map((r) => r.app_id),
+          wanted_tags: result.parsed.required_tags,
+        }).then((payload) => {
+          if (!payload) return;
+          setWhy(Object.fromEntries(payload.explanations.map((e) => [e.app_id, e])));
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -159,7 +182,11 @@ export default function App() {
 
           <div className="results">
             {response.results.map((result) => (
-              <ResultCard key={result.app_id} result={result} />
+              <ResultCard
+                key={result.app_id}
+                result={result}
+                explanation={why[result.app_id]}
+              />
             ))}
           </div>
 
