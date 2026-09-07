@@ -133,7 +133,12 @@ def search_endpoint(request: SearchRequest) -> SearchResponse:
         parse_ms = (time.perf_counter() - parse_start) * 1000
 
     try:
-        response = search(parsed, limit=request.limit, threshold=request.threshold)
+        response = search(
+            parsed,
+            limit=request.limit,
+            threshold=request.threshold,
+            relax_filters=request.relax,
+        )
     except httpx.HTTPError as exc:
         # Embedding is not optional the way parsing is - without a query vector
         # there is nothing to rank. Report it as a dependency failure rather

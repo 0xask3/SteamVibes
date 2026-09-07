@@ -232,6 +232,23 @@ class Settings(BaseSettings):
     # what huggingface_hub actually reads.
     hugging_face: SecretStr | None = None
 
+    # When the filters cannot fill a page, widen them one at a time rather than
+    # returning almost nothing. The ladder and the never-relax list live in
+    # app/relax.py; this only decides whether the loop runs at all.
+    #
+    # On by default because an empty page is worse than a widened one, and OFF
+    # in run_eval because recall must be measured against a FIXED filter set -
+    # a harness that quietly widens when a query returns little would report the
+    # relaxation as retrieval quality.
+    relax_filters: bool = True
+
+    # Rows that must pass the filters before relaxation stops. None means "the
+    # requested limit", which is deliberately conservative: relaxing while the
+    # filters can still fill the page overrides a constraint the user actually
+    # stated. Raising it trades filter fidelity for ranking quality, because
+    # ranking 12 survivors is the filter choosing the results, not the vector.
+    relax_target_rows: int | None = None
+
     @model_validator(mode="after")
     def _pool_fits_in_search(self) -> Settings:
         """Refuse a rerank pool the index cannot fill.

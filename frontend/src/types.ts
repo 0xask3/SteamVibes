@@ -82,6 +82,25 @@ export interface SearchResponse {
 
   /** Filters starved the vector index; fewer results than asked for. */
   under_delivered: boolean;
+
+  /**
+   * Filters widened to fill this page, in the order they were given up. Empty
+   * is the normal case.
+   *
+   * NOTE that `parsed` above is the RELAXED set - what actually ran - so the
+   * chips reflect the real query. This list is the diff that explains why they
+   * differ from what was typed, and the UI must show it: silently widening a
+   * constraint the user stated is worse than returning few results.
+   */
+  relaxed: RelaxationStep[];
+}
+
+export interface RelaxationStep {
+  field: string;
+  was: string;
+  now: string;
+  /** Pre-rendered by the backend; phrasing differs per field. */
+  note: string;
 }
 
 export interface SearchRequest {

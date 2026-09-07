@@ -134,6 +134,23 @@ class SearchResult(BaseModel):
     platforms: list[str] = Field(default_factory=list)
 
 
+class RelaxationStep(BaseModel):
+    """One filter widened because the previous set could not fill a page.
+
+    Carries the before and after rather than only a sentence, so a caller can
+    render it however it likes and a test can assert on values rather than on
+    prose.
+    """
+
+    field: str
+    was: str
+    now: str
+
+    # Pre-rendered because the phrasing differs per field - a dropped tag list
+    # and a doubled price are not the same sentence.
+    note: str
+
+
 class SearchResponse(BaseModel):
     # Returned alongside the results so the caller can see what was actually
     # applied. BUILD_PLAN.md's editable filter chips render this.
@@ -153,6 +170,13 @@ class SearchResponse(BaseModel):
     returned: int
 
     threshold: int
+
+    # Filters widened to fill this page, in the order they were given up. Empty
+    # is the normal case. `parsed` above reflects what was ACTUALLY applied -
+    # i.e. already relaxed - because that is what produced these results and
+    # what the chips must show; this list is the diff that explains it.
+    relaxed: list[RelaxationStep] = Field(default_factory=list)
+
     embed_ms: float
     query_ms: float
 
@@ -201,6 +225,10 @@ class SearchRequest(BaseModel):
 
     limit: int = Field(default=10, ge=1, le=50)
     threshold: int | None = None
+
+    # None follows settings.relax_filters. False is how run_eval measures recall
+    # against a fixed filter set.
+    relax: bool | None = None
 
 
 class GameDetail(BaseModel):

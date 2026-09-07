@@ -172,6 +172,19 @@ export default function App() {
             </p>
           )}
 
+          {/* Before the results, not after: this changed which games are on
+              screen, so it cannot be a footnote under them. */}
+          {response.relaxed.length > 0 && (
+            <div className="relaxed">
+              <strong>Widened your filters to fill this page:</strong>
+              <ul>
+                {response.relaxed.map((step) => (
+                  <li key={step.field}>{step.note}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {response.under_delivered && (
             <p className="warn">
               Asked for {response.requested}, got {response.returned}. The

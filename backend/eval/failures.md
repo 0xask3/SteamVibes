@@ -1969,3 +1969,75 @@ evidence next to the ground truth and reading eight of them, which took one
 script and less time than writing this entry. The reported number is also a
 FLOOR rather than a measure: it catches invented TAGS, and a model that invents
 a plot detail out of the description passes every check here.
+
+---
+
+### 39. The relaxation ladder's important half is the part that does nothing (2026-09-08)
+
+**BUILD_PLAN's Weekend 4 item 5.** A query whose filters match almost nothing
+returned an almost-empty page and a message telling the user to fix it. Now the
+filters widen one constraint at a time until the page fills, and the response
+says what was given up.
+
+**It runs on COUNTS, not on retried searches, and that is the whole cost
+argument.** The obvious implementation re-runs `search()` after each relaxation,
+which since #36 costs ~1.1s of cross-encoder per attempt - three seconds spent
+deciding which filters to use. A capped count over the same `_apply_filters()`
+is 11-24ms:
+
+```
+no filters            capped count 200    24ms
+tags+price+platform   capped count 200    13ms
+very selective        capped count   2    11ms
+zero rows             capped count   0    11ms
+```
+
+The cap matters: uncapped, the unfiltered count is 611ms, because "how many"
+is a much harder question than "are there at least ten". So the ladder is
+walked on counts and exactly one real search runs at the end. A query that
+needs no relaxation pays one count and nothing else - measured at 1,067ms total
+against the usual ~1,080ms.
+
+**The never-relax list is the important half of the file.** A short page is a
+disappointment; a confidently wrong page is a defect. Not relaxed, ever:
+`max_required_age` (a safety constraint - "for a 7 year old"), `excluded_tags`
+(dropping it shows horror to someone who said nothing scary),
+`excluded_app_ids` (returns the game they excluded by name), `multiplayer`
+(returns the wrong KIND of game, which is #32 arriving by another route), and
+`platforms` (a compatibility fact - "here are some Windows games anyway" is
+worthless to a Linux user). The loop gives up and returns a short page instead.
+
+Verified as behaviour rather than by reading the list: a query setting all five
+plus a price and a year returned results having relaxed ONLY `released_after`,
+with age, exclusions, platforms and the multiplayer axis all intact.
+
+**No model is in the loop, and that is the point.** An agent would ask the LLM
+which constraint to drop. This asks a table, in a fixed order, with a stopping
+condition. It is reproducible, testable, free, and cannot invent a constraint
+that was never there - which is a better demonstration of understanding agents
+than using one would be.
+
+**The ladder order is a JUDGEMENT and is labelled as one.** required_tags first
+because CLAUDE.md already calls it "a coarse recall gate" whose job the vector
+does better and whose intent survives whole in `semantic_query`; then
+min_reviews, released_after, min_price; then max_price DOUBLED rather than
+dropped, twice, which is BUILD_PLAN's own example and keeps half the intent.
+There is no eval for "was that the right constraint to give up" and inventing
+one would need labels nobody has, so it is stated as judgement in the code
+rather than dressed up as tuned.
+
+**Two things the first test run got wrong, both mine.** The first "starved"
+query I wrote was not starved at all - `Cozy` AND `Horror` AND `Investigation`
+has been ANY-of since #33, so it matched plenty and the ladder correctly did
+nothing. I briefly read that as a bug in the relaxation. And the notes were
+written with em dashes, which a Windows console renders as a replacement
+character; the same string is printed by the CLI and rendered in the browser, so
+it is ASCII now.
+
+`run_eval` sets `relax_filters=False` and prints `relax: OFF` on its
+self-labelling line. Recall is measured against a FIXED filter set, and a
+harness that quietly widened filters whenever a query returned little would
+report the relaxation as retrieval quality. The no-parse path would never
+trigger it - no filters means all 55,120 rows pass - but `--parse` would, and a
+number that only sometimes includes a second mechanism is the worst kind.
+Confirmed unchanged at 68.8 / 27.2 / 88.6 / 77.3.

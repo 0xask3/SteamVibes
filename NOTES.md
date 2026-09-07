@@ -4,6 +4,37 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-08 - Relaxation: the cheap loop, and the two things I got wrong testing it
+
+**What broke.** Nothing - this was item 5. A query whose filters match almost
+nothing returned an almost-empty page and told the user to fix it themselves.
+
+**What I tried.** The obvious loop re-runs `search()` after each relaxation.
+Since the cross-encoder landed that costs ~1.1s per attempt, so three attempts
+would spend three seconds deciding which filters to use. Measured a capped count
+over the same `_apply_filters()` instead: 11-24ms, and the LIMIT cap is what
+keeps it cheap - uncapped over the unfiltered 55,120 rows it is 611ms, because
+"how many" is a much harder question than "are there at least ten".
+
+**What fixed it.** Walk the ladder on counts, then run exactly one real search. A
+query needing no relaxation pays one extra count: 1,067ms total against the usual
+~1,080ms.
+
+**Two things my own tests got wrong.** The first "starved" query I wrote was not
+starved - `Cozy` AND `Horror` AND `Investigation` has been ANY-of since #33, so
+it matched plenty and the ladder correctly did nothing. I briefly read that as a
+bug in the relaxation rather than in the test. And I wrote the notes with em
+dashes, which a Windows console renders as a replacement character; the same
+string is printed by the CLI, not just rendered in the browser, so they are ASCII
+now.
+
+Consequences: `run_eval` sets `relax_filters=False` and prints `relax: OFF`,
+because recall must be measured against a fixed filter set. The never-relax list
+- age, exclusions, multiplayer, platforms - is verified as behaviour rather than
+by reading it. See failures.md #39.
+
+---
+
 ## 2026-09-08 — The hallucination checker was the thing hallucinating
 
 **What broke.** Built the grounded-explanation layer: a one-line "why this

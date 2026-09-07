@@ -141,6 +141,7 @@ def main() -> None:
             f"(w={settings.popularity_weight}, k={settings.rrf_k})"
         )
     print(f"model: {settings.embed_model}  |  review threshold: {threshold:,}")
+    print("relax: OFF (recall needs a fixed filter set)")
     print(
         f"rank:  {rank}  |  ef_search: {settings.hnsw_ef_search}  |  "
         f"pool: {settings.rerank_candidates}\n"
@@ -155,7 +156,18 @@ def main() -> None:
             else ParsedQuery(semantic_query=case.query)
         )
         start = time.perf_counter()
-        response = search(parsed, limit=args.limit, threshold=args.threshold)
+        # relax_filters=False is NOT a detail. Recall is measured against a
+        # FIXED filter set, and a harness that quietly widened filters whenever
+        # a query returned little would report the relaxation as retrieval
+        # quality. The no-parse path would never trigger it - no filters means
+        # 55,120 rows pass - but --parse would, and a number that only
+        # sometimes includes a second mechanism is the worst kind.
+        response = search(
+            parsed,
+            limit=args.limit,
+            threshold=args.threshold,
+            relax_filters=False,
+        )
         elapsed.append(time.perf_counter() - start)
         if response.rerank_ms is not None:
             rerank_times.append(response.rerank_ms)

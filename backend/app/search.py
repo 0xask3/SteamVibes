@@ -19,8 +19,14 @@ from app.config import settings
 from app.db import session_scope
 from app.embedding import embed_query
 from app.models import Game, GameCategory, GameTag
+from app.relax import relax
 from app.rerank import RerankUnavailable, rerank_scores
-from app.schemas import ParsedQuery, SearchResponse, SearchResult
+from app.schemas import (
+    ParsedQuery,
+    RelaxationStep,
+    SearchResponse,
+    SearchResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +255,10 @@ def _rerank_pool(
 
 
 def search(
-    parsed: ParsedQuery, limit: int = 10, threshold: int | None = None
+    parsed: ParsedQuery,
+    limit: int = 10,
+    threshold: int | None = None,
+    relax_filters: bool | None = None,
 ) -> SearchResponse:
     """Filter in SQL, then rank what survives by embedding distance.
 
@@ -260,6 +269,19 @@ def search(
     # so it can never drop below the baseline quality gate that keeps
     # 10-review shovelware out of every result set.
     base_threshold = settings.review_threshold if threshold is None else threshold
+
+    # Widen the filters BEFORE anything expensive, if they cannot fill a page.
+    # Runs on capped counts (~11-24ms each), never on retried searches, so a
+    # relaxed query still pays exactly one embed and one rerank. `parsed` is
+    # rebound deliberately: from here down it means what was actually applied,
+    # which is what the response reports and what the chips must show.
+    should_relax = settings.relax_filters if relax_filters is None else relax_filters
+    relaxed_steps: list[RelaxationStep] = []
+    if should_relax:
+        parsed, relaxed_steps = relax(
+            parsed, limit, base_threshold, target=settings.relax_target_rows
+        )
+
     effective_threshold = max(base_threshold, parsed.min_reviews or 0)
     unknown = _unknown_tags(parsed.required_tags + parsed.excluded_tags)
 
@@ -376,6 +398,7 @@ def search(
         requested=limit,
         returned=len(results),
         threshold=effective_threshold,
+        relaxed=relaxed_steps,
         embed_ms=embed_ms,
         query_ms=query_ms,
         rerank_ms=rerank_ms,

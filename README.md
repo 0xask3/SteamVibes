@@ -268,6 +268,24 @@ each silently destroyed a working filter, so intents like "popular" and
 "excluding X" are regexes over the query text instead. The cost is that
 unphrased variants get missed; the alternative cost a filter every single time.
 
+**When filters starve the index, they get widened rather than returning an
+empty page** — "No results under $10 — showing results under $20." A fixed
+ladder gives up `required_tags` first (the vector still carries the intent),
+then the review floor, the year, and finally doubles the price cap twice.
+
+The interesting half is what it *refuses* to touch: age limits, excluded tags,
+excluded games, the single/multiplayer axis and platform requirements are never
+relaxed, and the loop returns a short page instead. A disappointing page beats a
+confidently wrong one — showing horror to someone who said "nothing scary" is a
+defect, not a compromise.
+
+No model is in that loop. An agent would ask the LLM which constraint to drop;
+this asks a table, in a fixed order, with a stopping condition. It is
+reproducible, testable, free, and cannot invent a constraint that was never
+there. It runs on capped `COUNT` queries (11–24ms each) rather than retried
+searches, so a relaxed query still pays for exactly one embed and one rerank
+instead of three.
+
 **Franchise exclusion is coarse.** "excluding call of duty" is a prefix match, so
 it drops all 24 entries — sequels and spinoffs included.
 
@@ -305,7 +323,7 @@ eval is built to resist flattering itself:
   now quoted with a paired-bootstrap interval, and the ones that cross zero are
   reported as crossing zero.
 
-[`backend/eval/failures.md`](backend/eval/failures.md) documents 38 failure modes
+[`backend/eval/failures.md`](backend/eval/failures.md) documents 39 failure modes
 with mechanisms, including several where a conclusion in this repo turned out to
 be wrong and had to be withdrawn — the most recent being a reranker written off
 as bad that turned out to be mis-invoked, and then a claimed win over the

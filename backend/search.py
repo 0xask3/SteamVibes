@@ -91,8 +91,13 @@ def print_response(response: SearchResponse) -> None:
         timings += f"  |  rerank {response.rerank_ms:.0f}ms"
     print(f"\n{response.returned} results  |  {timings}")
 
-    # Never silent: this means the filter starved the vector index of
-    # candidates, not that only this many games matched.
+    # Never silent: relaxation CHANGES which games come back, so it is reported
+    # before the results are trusted, not tucked into a debug line.
+    for step in response.relaxed:
+        print(f"  ~ {step.note}")
+
+    # Still possible after relaxing: the ladder deliberately refuses to touch
+    # age limits, exclusions, the multiplayer axis or platforms.
     if response.under_delivered:
         print(
             f"\nWARNING: asked for {response.requested}, got {response.returned}. "

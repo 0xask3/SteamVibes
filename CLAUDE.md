@@ -509,6 +509,39 @@ Two categories, and I'll say which one we're in at the top of each session:
   verifier that rejects everything would otherwise score perfectly. Knowing the
   checker fires correctly on lies is what made a suspicious rate worth
   investigating instead of explaining away.
+- Query relaxation widens filters when they cannot fill a page, and its
+  important half is the NEVER-RELAX list. A short page is a disappointment; a
+  confidently wrong page is a defect. `max_required_age` (a safety constraint),
+  `excluded_tags` (dropping it shows horror to someone who said none),
+  `excluded_app_ids` (returns the game they excluded by name), `multiplayer`
+  (returns the wrong KIND of game - #32 by another route) and `platforms` (a
+  compatibility fact, not a preference) are never touched; the loop returns a
+  short page instead. Verify that as BEHAVIOUR, not by reading the list.
+- The relaxation loop runs on CAPPED COUNTS, never on retried searches. Since
+  the cross-encoder landed, re-running `search()` per attempt costs ~1.1s each;
+  a count over the same `_apply_filters()` is 11-24ms, and the LIMIT cap is what
+  keeps it cheap (uncapped over 55,120 unfiltered rows is 611ms, because "how
+  many" is a much harder question than "are there ten"). Walk the ladder on
+  counts, then run exactly one real search. Reuse `_apply_filters` rather than
+  restating the WHERE clauses: a count that disagreed with the real query about
+  what a filter means would relax the wrong thing, silently.
+- No model is in the relaxation loop, deliberately. An agent would ask the LLM
+  which constraint to drop; this asks a table in a fixed order with a stopping
+  condition, which is reproducible, testable, free, and cannot invent a
+  constraint that was never there. The ladder ORDER is a judgement, not a
+  measurement - there is no eval for "was that the right thing to give up" -
+  and it says so in the code rather than pretending to be tuned.
+- `run_eval` sets `relax_filters=False` and prints `relax: OFF`. Recall is
+  measured against a FIXED filter set; a harness that widened filters whenever a
+  query returned little would report the relaxation as retrieval quality. The
+  no-parse path would never trigger it, but `--parse` would, and a number that
+  only SOMETIMES includes a second mechanism is the worst kind.
+- `SearchResponse.parsed` means what was ACTUALLY applied, so after relaxation it
+  holds the widened filters and `relaxed` carries the diff. The chips must show
+  the query that ran, not the one that was typed - and the UI renders the diff
+  above the results, because a silently widened constraint is worse than a short
+  page. Strings in `RelaxationStep.note` are ASCII: the CLI prints them too, and
+  a Windows console renders an em dash as a replacement character.
 - Commit per feature, not per session.
 - When something breaks, three lines in `NOTES.md`: what broke, what I
   tried, what fixed it.
