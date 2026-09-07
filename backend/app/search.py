@@ -7,7 +7,9 @@ Read the query construction carefully - this is the file where a mistake
 produces plausible results forever rather than an error.
 """
 
+import logging
 import time
+from typing import Any
 
 from sqlalchemy import Float, Select, and_, cast, exists, func, not_, select, text
 from sqlalchemy.sql.elements import ColumnElement
@@ -17,7 +19,10 @@ from app.config import settings
 from app.db import session_scope
 from app.embedding import embed_query
 from app.models import Game, GameCategory, GameTag
+from app.rerank import RerankUnavailable, rerank_scores
 from app.schemas import ParsedQuery, SearchResponse, SearchResult
+
+logger = logging.getLogger(__name__)
 
 TOP_TAGS_SHOWN = 5
 
@@ -172,12 +177,75 @@ def _rank_score(cand: Subquery) -> ColumnElement[float]:
 
     # RRF. Ranks are within the candidate pool, which is the right frame: these
     # rows already passed retrieval, so the question is only how to order them.
+    #
+    # `rerank` lands here too, on purpose. The cross-encoder replaces the COSINE
+    # rank inside this same sum, in Python, once the pool has been scored - so
+    # computing this here costs nothing and buys the fallback: if TEI is down,
+    # the rows are already ordered by the blend that shipped before it existed.
     k = settings.rrf_k
     rank_by_similarity = func.row_number().over(order_by=cand.c.dist)
     rank_by_reviews = func.row_number().over(order_by=cand.c.total_reviews.desc())
     return cast(1.0 / (k + rank_by_similarity), Float) + cast(
         weight / (k + rank_by_reviews), Float
     )
+
+
+def _ranks(values: list[float]) -> list[int]:
+    """1-based rank per position, highest value first.
+
+    Stable, so equal values keep the order they arrived in - and they arrive in
+    cosine order, which makes stage 1 the tiebreak. That is the same tiebreak
+    SQL's row_number() applies, so the two orderings stay comparable.
+    """
+    order = sorted(range(len(values)), key=lambda i: -values[i])
+    ranks = [0] * len(values)
+    for position, index in enumerate(order, start=1):
+        ranks[index] = position
+    return ranks
+
+
+def _rerank_pool(
+    query: str, rows: list[Any]
+) -> tuple[list[tuple[Any, float]], float, bool]:
+    """Score the pool with the cross-encoder and re-fuse, in Python.
+
+    The fusion is the SAME rrf sum the SQL path uses - same k, same weight -
+    with the cross-encoder's rank substituted for the cosine one. Deliberately
+    not a new formula: keeping it identical is what makes a rerank run
+    comparable to the `rrf w=0.20` baseline instead of being a second variable.
+    POPULARITY_WEIGHT=0 collapses it to pure cross-encoder, which is how the
+    eval prices the popularity term rather than assuming it survived.
+
+    A dead or broken TEI is NOT an outage. The rows are already ordered by the
+    blend that shipped before any of this existed, so the fallback is to hand
+    them back untouched with a WARNING - the same contract the parser has, where
+    a failure degrades to plain semantic search. The elapsed time is still
+    reported, because time spent failing is still time the user waited.
+    """
+    start = time.perf_counter()
+    try:
+        scores = rerank_scores(query, [row.embed_text or "" for row in rows])
+    except RerankUnavailable as exc:
+        logger.warning(
+            "reranker unavailable, falling back to the %s ordering for %d "
+            "candidates: %s",
+            settings.rank_method,
+            len(rows),
+            exc,
+        )
+        elapsed = (time.perf_counter() - start) * 1000
+        return [(row, float(row.rank_score)) for row in rows], elapsed, False
+
+    k = settings.rrf_k
+    weight = settings.popularity_weight
+    by_model = _ranks(scores)
+    by_reviews = _ranks([float(row.total_reviews or 0) for row in rows])
+    fused = [
+        1.0 / (k + by_model[i]) + weight / (k + by_reviews[i]) for i in range(len(rows))
+    ]
+    order = sorted(range(len(rows)), key=lambda i: -fused[i])
+    elapsed = (time.perf_counter() - start) * 1000
+    return [(rows[i], fused[i]) for i in order], elapsed, True
 
 
 def search(
@@ -200,8 +268,9 @@ def search(
     embed_ms = (time.perf_counter() - embed_start) * 1000
 
     distance = Game.embedding.cosine_distance(query_vec)
+    reranking = settings.rank_method == "rerank"
 
-    candidates = select(
+    pool_columns: list[Any] = [
         Game.app_id,
         Game.name,
         Game.short_description,
@@ -215,7 +284,15 @@ def search(
         Game.linux,
         # tags is stored votes-first, so a slice is the top N. No subquery.
         Game.tags[1:TOP_TAGS_SHOWN].label("top_tags"),
-    ).where(
+    ]
+    if reranking:
+        # The exact text stage 1 indexed, so both stages score the same object.
+        # ~1KB x 200 rows per search, which is why no other mode selects it. The
+        # arctic document prefix lives in embed_texts() and was never stored, so
+        # this needs no stripping before it reaches a different model.
+        pool_columns.append(Game.embed_text.label("embed_text"))
+
+    candidates = select(*pool_columns).where(
         and_(
             Game.embedding.isnot(None),
             Game.total_reviews > effective_threshold,
@@ -236,11 +313,14 @@ def search(
     # single-stage query used and not merely an equal one.
     ordering = cand.c.dist if settings.rank_method == "none" else rank_score.desc()
 
-    stmt = (
-        select(*cand.c, (1 - cand.c.dist).label("score"), rank_score.label("rank_score"))
-        .order_by(ordering)
-        .limit(limit)
-    )
+    stmt = select(
+        *cand.c, (1 - cand.c.dist).label("score"), rank_score.label("rank_score")
+    ).order_by(ordering)
+    # The cross-encoder needs the WHOLE pool. Reordering the ten rows the old
+    # ranking already picked could not surface anything it had buried, which is
+    # the entire point - 9 of 9 tail misses sit between rank 11 and 200.
+    if not reranking:
+        stmt = stmt.limit(limit)
 
     query_start = time.perf_counter()
     with session_scope() as session:
@@ -260,13 +340,23 @@ def search(
         rows = session.execute(stmt).all()
     query_ms = (time.perf_counter() - query_start) * 1000
 
+    # Stage 2 already ran in SQL; in rerank mode stage 3 overrides its ordering
+    # and its scores. Pairing each row with its score here rather than reading
+    # row.rank_score below is what lets the two paths share one result builder.
+    rerank_ms: float | None = None
+    reranked = False
+    scored: list[tuple[Any, float]] = [(row, float(row.rank_score)) for row in rows]
+    if reranking:
+        scored, rerank_ms, reranked = _rerank_pool(parsed.semantic_query, list(rows))
+    scored = scored[:limit]
+
     results = [
         SearchResult(
             app_id=row.app_id,
             name=row.name,
             short_description=row.short_description,
             score=float(row.score),
-            rank_score=float(row.rank_score),
+            rank_score=rank_value,
             list_price_usd=row.list_price_usd,
             is_free=row.is_free,
             total_reviews=row.total_reviews,
@@ -276,7 +366,7 @@ def search(
             tags=list(row.top_tags or []),
             platforms=_platforms(row.windows, row.mac, row.linux),
         )
-        for row in rows
+        for row, rank_value in scored
     ]
 
     return SearchResponse(
@@ -288,4 +378,6 @@ def search(
         threshold=effective_threshold,
         embed_ms=embed_ms,
         query_ms=query_ms,
+        rerank_ms=rerank_ms,
+        reranked=reranked,
     )

@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/app/config.py -> backend/app -> backend -> repo root
@@ -132,13 +132,72 @@ class Settings(BaseSettings):
     # observed defect - Cities: Skylines II above a 27-review asset flip for
     # "city builder" - while leaving 70% of results in the tail.
     # See failures.md #26.
-    rank_method: Literal["none", "log", "rrf"] = "rrf"
+    #   rerank - a cross-encoder scores each pooled candidate against the query,
+    #            and its RANK replaces the cosine rank inside the same rrf sum.
+    #            Same k, same weight, so the number stays comparable to `rrf`
+    #            and the tail-cost counter-metric keeps meaning what it meant.
+    #            POPULARITY_WEIGHT=0 makes it pure cross-encoder.
+    #
+    # Why a cross-encoder at all, measured rather than assumed: of the 76
+    # labelled targets NOT already in the top 10, 40 are inside the 200-row pool
+    # and 36 are not. On the two tiers that can price a ranking change it is
+    # lopsided - ALL 9 tail misses and 9 of 11 specific misses are already in
+    # the pool, so retrieval found them and the ordering buried them. A
+    # bi-encoder embeds query and document separately and never reads them
+    # together; a cross-encoder does. Ceiling: 112 of 148 targets are in the
+    # pool at all, so 75.7% overall is the most any reranker can produce here.
+    # Default is `rerank` on measurement: 66.1% overall against rrf's 60.5%,
+    # specific 88.6 against 79.5, tail 75.0 against 70.5, with the tail-cost
+    # counter-metric flat (73% under 1k against 74%) - so it is not buying
+    # recall by deleting the long tail. 264ms median for that. See failures.md
+    # #36. docker-compose overrides this back to `rrf` because the container has
+    # neither torch nor the GPU.
+    rank_method: Literal["none", "log", "rrf", "rerank"] = "rerank"
     popularity_weight: float = 0.20
 
     # RRF's rank-smoothing constant. 60 is the value from the original paper and
     # the usual default; it decides how quickly the benefit of being ranked
     # higher flattens out.
     rrf_k: int = 60
+
+    # The cross-encoder, loaded IN-PROCESS by app/rerank.py. A Hugging Face
+    # model id, not a served endpoint, because neither serving route works here:
+    # Ollama has no rerank endpoint at all, and TEI cannot reach the GPU through
+    # Docker Desktop's WSL2 backend. See app/rerank.py's module docstring.
+    #
+    # Changing this changes what the ranking MEANS, so a bake-off arm is one
+    # .env line plus a restart - and verify_rerank_model() refuses to let an
+    # eval run against a model that did not actually load.
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+
+    # "cuda" or "cpu". CPU is not a slower version of this measurement, it is an
+    # unusable one: TEI on CPU never finished warming up a 568M cross-encoder,
+    # and 118 queries x 200 candidates would run for hours. cuda is the default
+    # so that a silent CPU fallback becomes an error rather than a mystery -
+    # sentence-transformers will happily use CPU without saying so.
+    rerank_device: str = "cuda"
+
+    # Pairs per forward pass. Not a network batch - it is what
+    # sentence-transformers hands the GPU at once, trading VRAM for throughput.
+    # 128 pairs at 512 tokens sits comfortably beside a 6.6GB chat model on
+    # 16GB. Lower this before lowering the pool if VRAM gets tight: the pool
+    # size decides which targets are REACHABLE, this only decides how fast.
+    rerank_batch_size: int = 128
+
+    # Some rerankers ship a CUSTOM architecture and will not load without this -
+    # gte-multilingual-reranker-base pulls `Alibaba-NLP/new-impl`. It means
+    # executing Python from the model repo at load time, so it is opt-in per
+    # model rather than on by default: a setting somebody has to type is a
+    # decision somebody made.
+    rerank_trust_remote_code: bool = False
+
+    # Optional Hugging Face token. Unauthenticated Hub downloads are rate
+    # limited hard enough to stall a 1.2GB model at 9KB, which looks like a hang
+    # rather than a limit. SecretStr so it cannot reach a log line or a
+    # traceback - pydantic prints `**********` for it, including in the repr of
+    # the whole Settings object. app/rerank.py copies it into HF_TOKEN, which is
+    # what huggingface_hub actually reads.
+    hugging_face: SecretStr | None = None
 
     @model_validator(mode="after")
     def _pool_fits_in_search(self) -> Settings:

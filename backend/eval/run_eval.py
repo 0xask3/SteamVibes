@@ -34,6 +34,7 @@ import yaml
 from app.config import settings
 from app.embedding import verify_corpus_complete, verify_corpus_model
 from app.query_parser import parse_query
+from app.rerank import verify_rerank_model
 from app.schemas import ParsedQuery
 from app.search import search
 
@@ -102,11 +103,19 @@ def main() -> None:
     # here because this file's whole job is deciding whether a change helped.
     verify_corpus_model()
     verify_corpus_complete()
+    # Same class of invisible mismatch, one layer out: TEI serves whatever model
+    # its container started with, the backend cannot tell, and a container left
+    # running from the previous bake-off arm answers every request happily. That
+    # difference would be written into a table as a model result.
+    if settings.rank_method == "rerank":
+        verify_rerank_model()
 
     cases = load_cases()
     names: dict[int, str] = {}
     scores: dict[str, list[float]] = {"en": [], "de": []}
     elapsed: list[float] = []
+    rerank_times: list[float] = []
+    fell_back = 0
     misses: list[tuple[Case, set[int]]] = []
     tiers: dict[str, list[float]] = {"core": [], "specific": [], "tail": []}
     cells: dict[tuple[str, str], list[float]] = {}
@@ -124,6 +133,13 @@ def main() -> None:
         rank = f"log (w={settings.popularity_weight})"
     elif settings.rank_method == "rrf":
         rank = f"rrf (w={settings.popularity_weight}, k={settings.rrf_k})"
+    elif settings.rank_method == "rerank":
+        # The reranker model belongs on this line for the same reason the embed
+        # model does: a table pasted into NOTES.md without it is not reproducible.
+        rank = (
+            f"rerank {settings.rerank_model} "
+            f"(w={settings.popularity_weight}, k={settings.rrf_k})"
+        )
     print(f"model: {settings.embed_model}  |  review threshold: {threshold:,}")
     print(
         f"rank:  {rank}  |  ef_search: {settings.hnsw_ef_search}  |  "
@@ -141,6 +157,10 @@ def main() -> None:
         start = time.perf_counter()
         response = search(parsed, limit=args.limit, threshold=args.threshold)
         elapsed.append(time.perf_counter() - start)
+        if response.rerank_ms is not None:
+            rerank_times.append(response.rerank_ms)
+            if not response.reranked:
+                fell_back += 1
 
         recall, missed = case.recall([r.app_id for r in response.results], args.limit)
         scores[case.lang].append(recall)
@@ -155,6 +175,18 @@ def main() -> None:
         print(f"{flag}{mark} {case.query[:50]:<52}{case.lang:<6}{recall:>6.0%}")
 
     print("-" * 70)
+
+    # A run where ANY query fell back is not a weaker measurement of this model,
+    # it is a measurement of the baseline wearing this model's label. Refuse it
+    # rather than print a table somebody will paste into NOTES.md. Partial
+    # counts matter too: 3 fallbacks out of 118 would move a number by more than
+    # the reproducibility floor and look like a result.
+    if fell_back:
+        raise SystemExit(
+            f"\nREFUSING TO REPORT: the cross-encoder failed on {fell_back} of "
+            f"{len(cases)} queries and those fell back to the SQL ordering, so "
+            "this table would be part baseline. Check the WARNING lines above."
+        )
 
     def row(tag: str, values: list[float]) -> None:
         """One summary line, padded so every percentage lands in a column."""
@@ -224,6 +256,17 @@ def main() -> None:
         print(f"  median reviews returned:{median_revs:>9,}")
         print(f"  results under 1k reviews:{under_1k:>8.0%}")
     print(f"  median search latency:{statistics.median(elapsed) * 1000:>10.0f}ms")
+    # Split out because the reranker's entire trade is recall against latency,
+    # and the line above hides it inside a total that also carries the embed
+    # call. p95 as well as median: a reranker that is usually fast and
+    # occasionally slow is a different product from one that is evenly slow.
+    if rerank_times:
+        ordered = sorted(rerank_times)
+        p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
+        print(
+            f"    of which reranking:{statistics.median(rerank_times):>12.0f}ms"
+            f"   (p95 {p95:.0f}ms)"
+        )
 
     if args.misses and misses:
         print("\nmissed:")

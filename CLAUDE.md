@@ -44,7 +44,10 @@ Two categories, and I'll say which one we're in at the top of each session:
 ## Commands
 - `docker compose up -d db ollama` — start deps
 - `cd backend && uv run uvicorn app.main:app --reload`
-- `cd backend && uv run python -m eval.run_eval` — recall, for RETRIEVAL changes
+- `cd backend && uv run python -m eval.run_eval` — recall, for RETRIEVAL and
+  RANKING changes. Refuses to print a table if any query fell back from the
+  reranker; a part-baseline run is not a weaker measurement, it is a different
+  one wearing the model's label.
 - `cd backend && uv run python -m eval.run_parse_eval` — for PARSER changes.
   Recall cannot referee those; see the Eval section.
 - `cd frontend && npm run dev`
@@ -291,6 +294,79 @@ Two categories, and I'll say which one we're in at the top of each session:
   `ORDER BY embedding <=> :v`, and any composite expression there silently drops
   to an exact scan. `RERANK_CANDIDATES` must not exceed `HNSW_EF_SEARCH`;
   config.py raises if it does, because stage 1 coming up short is silent.
+- Search ranking is THREE stages when `RANK_METHOD=rerank`. HNSW retrieves
+  `RERANK_CANDIDATES` by pure cosine, SQL computes the rrf blend, then a
+  cross-encoder scores the whole pool in Python and its RANK replaces the COSINE
+  rank inside that same rrf sum - same `k`, same `w`. Deliberately not a new
+  formula: keeping it identical is what makes a rerank run comparable to the
+  `rrf w=0.20` baseline instead of being a second variable, and it keeps the
+  tail-cost counter-metric meaning what it meant. `POPULARITY_WEIGHT=0` collapses
+  it to pure cross-encoder. The SQL blend is computed even in rerank mode because
+  it costs nothing and is the fallback ordering when the model will not load.
+- The reranker runs IN-PROCESS on the host GPU, which is the one model in this
+  project that is not behind HTTP. Both serving routes are dead here and both
+  fail silently: Ollama has no rerank endpoint at all (`POST /api/rerank` -> 404
+  on 0.33.3, PR #7219 open since 2024, and every community workaround scores
+  through the EMBEDDING endpoint, which is the bi-encoder we already have), and
+  TEI cannot reach the GPU through Docker Desktop's WSL2 backend - the container
+  gets working NVML and a CUDA driver API that answers CUDA_ERROR_NO_DEVICE, so
+  it starts on CPU with a WARNING and never finishes warming up. Reproduced with
+  a plain `docker run --gpus all`, so it is not the compose file. BUILD_PLAN
+  sanctions this route in the same line as the Ollama one. The cost is real: the
+  containerised backend CANNOT rerank, so docker-compose sets `RANK_METHOD=rrf`
+  explicitly. See NOTES.md 2026-09-07.
+- `uv add torch` on Windows installs a CPU-ONLY wheel from PyPI, silently, and
+  the only symptom is `torch.cuda.is_available() == False` - which reads as a
+  broken GPU rather than a wrong wheel. An unnamed `[[tool.uv.index]]` does not
+  fix it either; resolution goes back to PyPI. It needs a NAMED index with
+  `explicit = true` plus a `[tool.uv.sources]` binding, which is why pyproject
+  carries both. `RERANK_DEVICE=cuda` is then checked at load, because
+  sentence-transformers falls back to CPU without saying so and a CPU eval is not
+  a slower measurement - TEI never finished warming up a 568M cross-encoder on
+  CPU, and 118 queries x 200 candidates would run for hours.
+- LOADING IS NOT SCORING, and the difference produced a wrong results table.
+  `gte-multilingual-reranker-base` loads cleanly and raises a CUDA device-side
+  assert on every `predict()`, so all 118 queries degraded to the SQL ordering
+  and `run_eval` printed 60.5 / 17.8 / 79.5 / 70.5 - byte-identical to the
+  control, reading as "no better" rather than "never ran". `verify_rerank_model()`
+  now scores a probe pair and rejects CONSTANT scores too, because `_ranks` is a
+  stable sort and constant scores reproduce the incoming cosine order exactly.
+  `run_eval` refuses to print any table if a single query fell back: a run that
+  is part baseline is not a weaker measurement, it is a different one wearing
+  this model's label. See failures.md #36.
+- A cross-encoder is WORSE at short genre labels, and recall cannot see it.
+  For "city builder" - the query `w=0.20` exists to fix - Cities: Skylines II
+  goes from rank 1 to 37 fused and 52 pure, because the model rewards literal
+  topical match and a 78-review game named `City Builder` wins that. Meanwhile
+  `core` recall reports 17.8 -> 20.0, i.e. better, because core labels 2-3 games
+  out of hundreds that satisfy the query. That probe, not the tier, is why the
+  popularity term stays at 0.20 rather than 0: pure cross-encoder scores 77.3 on
+  tail against fused 75.0, but both sit at the n=44 floor while the probe does
+  not. Check a mechanism when a tier cannot price one.
+- `RERANK_CANDIDATES` stays 200 and that is measured, not inherited. Every
+  `specific` target a reranker can reach is inside rank 100 and 8 of 9 `tail`
+  ones are; 200 -> 500 buys 16 more targets of which 14 are `core`, the tier that
+  cannot price this. Reranking is O(pool) latency, so rows past the last
+  recoverable target are latency bought for nothing. If VRAM or latency gets
+  tight, lower `RERANK_BATCH_SIZE` first - the pool decides which targets are
+  REACHABLE, the batch only decides how fast.
+- A reranker's numbers mean nothing until you have checked it can actually
+  discriminate, not merely rank. `Qwen3-Reranker-0.6B` scored 8.1% overall, which
+  was an invocation bug and not its quality: the seq-cls conversion still needs
+  the Qwen `<Instruct>/<Query>/<Document>` chat template, and a bare
+  `(query, document)` pair yields near-zero logits. On a three-document probe it
+  orders correctly with a spread of 0.121 against bge's 0.865 - right order, no
+  conviction, which is fine on an obvious triple and useless over 200 similar
+  games. Compare SPREAD on a known triple before believing a recall number.
+  `gte-multilingual-reranker-base` is excluded separately as incompatible with
+  transformers 5.x (`IndexError: index ... out of bounds for dimension 0 with
+  size 30` from its remote code), not as worse.
+- `RERANK_TRUST_REMOTE_CODE` executes Python from the model repo at load time.
+  Off by default and opt-in per model, because a setting somebody has to type is
+  a decision somebody made. `HUGGING_FACE` is a `SecretStr` so it cannot reach a
+  log line or a traceback; app/rerank.py copies it into `HF_TOKEN`, which is what
+  huggingface_hub actually reads. Unauthenticated Hub downloads are rate limited
+  hard enough to stall a 1.2GB model at 9KB, which looks like a hang.
 - `HNSW_EF_SEARCH=200`, not pgvector's default of 40. The default cost 3.3
   recall points at threshold 10 (15.0% against the exact scan's 18.3%) for 8ms.
 - Differences below ~2.5 points at n=44, or ~1 point at n=118, are NOT results.
@@ -554,7 +630,20 @@ German is NOT a model problem. Arctic's `specific` gain is entirely English -
 multilingual model bought 20 English points and zero German ones. The next thing
 to try is a German document field or query translation, not a fourth model.
 
-Ranking: `rrf w=0.20` over a 200-candidate pool. recall@10 is 25.0 / 26.7 /
+Ranking: THREE stages as of Weekend 4 - `rrf w=0.20` over a 200-candidate pool,
+then a `BAAI/bge-reranker-v2-m3` cross-encoder whose rank replaces the cosine one
+inside that same rrf sum. 66.1% overall against the two-stage 60.5%, `specific`
+88.6 against 79.5, `tail` 75.0 against 70.5, tail cost flat at 73% under 1k
+against 74%, 264ms median (p95 314ms). It is the DEFAULT in config.py and
+overridden back to `rrf` in docker-compose, because the container has neither
+torch nor the GPU. Weakness, and it is not in any tier: the cross-encoder demotes
+famous correct answers on short genre labels - Cities: Skylines II falls from
+rank 1 to 37 for "city builder" - while `core` recall says it improved. Two
+models were excluded for reasons that are NOT quality: gte-multilingual is
+incompatible with transformers 5.x, and Qwen3-Reranker was never correctly
+invoked (it needs its chat template). See failures.md #36.
+
+Two-stage baseline, for comparison: `rrf w=0.20` over a 200-candidate pool. recall@10 is 25.0 / 26.7 /
 30.0 / 41.1 / 42.2% across the five thresholds, from 18.3 / 22.8 / 26.7 / 38.3 /
 38.9. Query time 44-85ms. `run_eval`'s latency figure includes the embedding
 call, so it is not a query measurement - Ollama swung 94-834ms after a host

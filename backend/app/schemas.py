@@ -156,6 +156,21 @@ class SearchResponse(BaseModel):
     embed_ms: float
     query_ms: float
 
+    # None means no cross-encoder ran - RANK_METHOD is not `rerank`. A number
+    # means it did, INCLUDING when it failed and search fell back to the SQL
+    # ordering, because time spent on a dead container is still time spent.
+    # Surfaced because the reranker's whole trade is recall against latency,
+    # and a cost nobody can see is a cost nobody can argue about.
+    rerank_ms: float | None = None
+
+    # Whether the cross-encoder actually SCORED this pool, as opposed to being
+    # asked to and failing. rerank_ms alone cannot tell the two apart, and the
+    # difference is not cosmetic: a run that silently fell back returns the
+    # baseline ordering while every label on the output still says `rerank`.
+    # That produced a full 118-query eval table identical to the baseline, which
+    # read as "this model is no better" rather than "this model never ran".
+    reranked: bool = False
+
     # None means no LLM call happened - the caller supplied an already-parsed
     # query, which is what an edited filter chip does. Set by the API endpoint
     # rather than by search(), which knows nothing about parsing.

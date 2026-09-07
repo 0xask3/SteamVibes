@@ -19,6 +19,8 @@ dependencies = [
     # Used directly by eval/run_eval.py, so declared rather than relied on as a
     # transitive dependency of uvicorn[standard].
     "pyyaml>=6.0",
+    "sentence-transformers>=6.0.1",
+    "torch>=2.9.1",
 ]
 
 [dependency-groups]
@@ -31,6 +33,23 @@ dev = [
 
 [tool.ruff]
 line-length = 88
+
+# torch must come from PyTorch's own index, not PyPI. The PyPI wheel for
+# Windows is CPU-ONLY and installs without complaint - `torch.cuda.is_available()`
+# just returns False, which looks like a broken GPU rather than a wrong wheel.
+# `explicit = true` means only the packages named in [tool.uv.sources] use this
+# index, so everything else still resolves from PyPI.
+#
+# cu130 matches the host driver (CUDA UMD 13.4). The version ceiling is real:
+# this index carries torch 2.9.1 for cp314, while PyPI is already on 2.14 - so
+# an unpinned `torch>=2.14` silently falls back to PyPI and the CPU build.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
 
 [tool.ruff.lint.per-file-ignores]
 # UP037 wants the quotes removed from Mapped[list["GameTag"]]. Don't: string

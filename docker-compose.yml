@@ -49,6 +49,12 @@ services:
       CHAT_NUM_CTX: ${CHAT_NUM_CTX:-8192}
       REVIEW_THRESHOLD: ${REVIEW_THRESHOLD:-10}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      # config.py defaults to `rerank`, which this container CANNOT do: torch is
+      # not in the image and the GPU is not reachable from it. Left at the
+      # default it would fail to load the cross-encoder once and then log a
+      # fallback WARNING on every search. Overridden here rather than papered
+      # over, the same way ingest is documented as a host-only step.
+      RANK_METHOD: ${RANK_METHOD:-rrf}
     # Docker Desktop resolves host.docker.internal on its own; native Linux
     # does not, and this is what makes the same file work on both.
     extra_hosts:

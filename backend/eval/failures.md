@@ -1666,3 +1666,105 @@ Also worth naming: the eval cannot score this at all. No query in `queries.yaml`
 deliberately references a game, so the 118 serve as a false-positive corpus
 rather than a recall measure. That is the third distinct thing #33's "the eval
 cannot referee a parser change" applies to.
+
+---
+
+### 36. A cross-encoder is worth 5.6 points, and three of the four arms lied first (2026-09-07)
+
+**Why reranking at all, decided by measurement rather than by BUILD_PLAN's
+ordering.** Every labelled target's exact cosine rank over the searchable
+corpus, bucketed by whether reranking could ever reach it:
+
+```
+already in top 10                            72    48.6%
+rank 11-200   a reranker CAN fix             40    27.0%
+rank >200     only retrieval can fix         36    24.3%
+
+tier          hit@10  rerankable  outside
+core               4          22       34
+specific          33           9        2
+tail              35           9        0
+```
+
+On the two tiers that can price a ranking change it is lopsided: **all 9 tail
+misses and 9 of 11 specific misses are already in the pool** - retrieval found
+them and the ordering buried them. That is the case for a cross-encoder, and it
+also fixed the ceiling in advance: 112 of 148 targets are in the pool at all, so
+75.7% overall is the most any reranker can produce here.
+
+It also killed the hybrid-retrieval idea for now. The 34 `core` targets outside
+the pool are mostly not bugs - Stardew Valley is 28,954th for "entspanntes Spiel
+zum Abschalten" because thousands of games are relaxing and the label is one
+opinion about which was meant.
+
+**Result: `BAAI/bge-reranker-v2-m3`, cross-encoder rank substituted for the
+cosine rank inside the SAME rrf sum, same k, same w.**
+
+| config | overall | core | specific | tail | under 1k | rerank |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline `rrf w=0.20` | 60.5 | 17.8 | 79.5 | 70.5 | 74% | - |
+| **bge fused w=0.20** | **66.1** | 20.0 | **88.6** | **75.0** | 73% | 264ms |
+| bge pure w=0 | 65.3 | 16.7 | 86.4 | 77.3 | 81% | 263ms |
+
++5.6 overall, +9.1 `specific`, +4.5 `tail`, all clear of the ~1 point floor at
+n=118, with the tail-cost counter-metric flat at 73% against 74%. English
+`specific` reaches 97.1%.
+
+**The finding that is not in the table, and that recall cannot see.** A
+cross-encoder is WORSE at short genre labels. For "city builder", the query that
+originally justified `w=0.20` at all:
+
+| config | Cities: Skylines II |
+| --- | --- |
+| baseline | rank **1** |
+| rerank fused | rank 37 |
+| rerank pure | rank 52 |
+
+It rewards literal topical match, so a game named `City Builder` with 78 reviews
+beats the genre-defining title, and at `w=0` the 27-review `Square City Builder`
+is back in the top 5 - the exact defect #26 introduced the weight to suppress.
+`core` recall reports 17.8 -> 20.0, i.e. slightly BETTER, because core labels
+2-3 games out of hundreds that would satisfy the query. So the popularity term
+is doing more work than the 0.8-point overall difference suggests, and fused
+wins on evidence recall does not contain. Read the probe, not the tier.
+
+**Three of the four arms produced a number before they produced a valid one.**
+
+*gte-multilingual-reranker-base scored a full, clean, plausible table that was
+entirely the baseline.* It loads fine and then raises a CUDA device-side assert
+on every `predict()`, so all 118 queries degraded to the SQL ordering exactly as
+designed - and printed 60.5 / 17.8 / 79.5 / 70.5, byte-identical to the control,
+which reads as "this model is no better" rather than "this model never ran".
+Reranking took 16ms for 200 candidates, which was the only visible tell.
+`verify_rerank_model()` had checked that the model LOADS. Loading is not scoring.
+It now scores a probe pair and rejects constant scores as well, because `_ranks`
+is a stable sort and constant scores reproduce the incoming cosine order exactly;
+and `run_eval` now refuses to print a table at all if any query fell back. On CPU
+the real error appears: `IndexError: index 5679222161408 is out of bounds for
+dimension 0 with size 30` - the model's remote code against transformers 5.16.1.
+Not a dtype problem, not fixable by config, and not worth downgrading
+transformers project-wide. Excluded as incompatible, NOT as worse.
+
+*Qwen3-Reranker-0.6B scored 8.1% overall, and that is my bug, not its quality.*
+The seq-cls conversion still needs the Qwen `<Instruct>/<Query>/<Document>` chat
+template; handed a bare `(query, document)` pair it emits near-zero logits. Same
+three-document probe, sorted correctly by both models:
+
+```
+bge      0.8647  0.0002  0.0058     spread 0.8645
+qwen3    0.5857  0.4921  0.4647     spread 0.1210
+```
+
+Right order, no conviction - which is fine on an obvious triple and useless
+across 200 similar games. Recorded as NOT MEASURED. Reporting 8.1% as a model
+result would have been the same error as the gte table, one layer up.
+
+**What to take from this.** Every layer of this failed silently and in the
+direction of "still works, just worse": Ollama 404s a rerank endpoint that does
+not exist, TEI warns and continues on CPU, torch installs a CPU-only wheel
+without complaint, gte falls back to the baseline behind a valid-looking table,
+and Qwen3 returns real numbers with no information in them. Not one raised. The
+guard that catches the dangerous one - a measurement contaminated by its own
+fallback - did not exist until it had already produced a wrong table, which is
+the third time this project has learned that a harness needs testing against a
+known-bad input before its output means anything (#33, run_parse_eval, this).

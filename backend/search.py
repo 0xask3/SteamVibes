@@ -84,10 +84,12 @@ def print_response(response: SearchResponse) -> None:
     for rank, result in enumerate(response.results, start=1):
         print_result(rank, result)
 
-    print(
-        f"\n{response.returned} results  |  "
-        f"embed {response.embed_ms:.0f}ms  |  query {response.query_ms:.0f}ms"
-    )
+    timings = f"embed {response.embed_ms:.0f}ms  |  query {response.query_ms:.0f}ms"
+    # Only when a cross-encoder actually ran. Shown beside the others because
+    # the reranker is bought with latency, and a hidden cost cannot be argued.
+    if response.rerank_ms is not None:
+        timings += f"  |  rerank {response.rerank_ms:.0f}ms"
+    print(f"\n{response.returned} results  |  {timings}")
 
     # Never silent: this means the filter starved the vector index of
     # candidates, not that only this many games matched.
@@ -185,7 +187,9 @@ def main() -> None:
 
     # WARNING and above to stderr, so the parser fallback is visible rather
     # than silent. CLAUDE.md: the fallback AND the log line.
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
 
     # Before the first embed call, not after: a model mismatch is silent at
     # every other layer, so it has to be checked rather than noticed.

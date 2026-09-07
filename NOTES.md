@@ -4,6 +4,92 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-07 — The reranker could not be served, twice, and torch lied about why
+
+**What broke.** BUILD_PLAN's Weekend 4 item 1 says `ollama pull
+bge-reranker-v2-m3`. Ollama has no rerank endpoint at all — `POST /api/rerank`
+is a **404** on 0.33.3, PR #7219 has been open since 2024, and every community
+workaround scores through the *embedding* endpoint, which is the bi-encoder the
+project already has. So the one-line instruction was never going to run.
+
+**What I tried.** Hugging Face TEI as a compose service, which is the right
+shape for this repo — a container with a real `/rerank` route, direct HTTP, same
+as Ollama. It came up on **CPU**, with `Could not find a compatible CUDA device`
+as a WARNING rather than an error, and then sat in "Warming up model" for eight
+minutes without ever going healthy.
+
+Chased the compose syntax first and was wrong: switched
+`deploy.resources.reservations.devices` to the modern `gpus: all`, and a plain
+`docker run --gpus all` on the same image failed identically. Not the compose
+file.
+
+The container's view was genuinely strange, and each of these is a thing that
+usually IS the answer:
+
+```
+nvidia-smi -L        GPU 0: NVIDIA GeForce RTX 4080 SUPER (UUID: GPU-e219df2a...)
+/dev/dxg             present
+libdxcore.so         present
+/usr/lib/wsl/drivers populated
+CUDA driver API      DriverError(CUDA_ERROR_NO_DEVICE)
+```
+
+NVML works and the CUDA driver API does not, which is the signature of a
+**user-mode/kernel-mode driver mismatch**. The container was being handed UMD
+615.65.06 against KMD 616.56. Upgrading the host driver to 616.56 and restarting
+WSL did not move it: the mounted `libcuda.so.1` stayed byte-identical (188,024
+bytes, dated Aug 20), because Docker Desktop ships driver libraries in its own
+managed WSL distro and those track **Docker Desktop's** version, not the host's
+NVIDIA driver. `NVIDIA_DISABLE_REQUIRE=1` did not help either. This is the
+documented Docker Desktop WSL2 / NVIDIA Container Toolkit incompatibility;
+NVIDIA's own guidance is to use Docker CE inside WSL2 instead.
+
+**What fixed it.** Ran the model in-process on the host, where CUDA has worked
+the whole time — Ollama has been using that GPU all session. BUILD_PLAN sanctions
+it in the same line as the Ollama suggestion: "or run it via
+sentence-transformers".
+
+Then torch lied about the reason, which cost two more rounds and is the part
+worth remembering. `uv add torch` on Windows installs **`2.14.0+cpu` from PyPI**,
+silently, and the only symptom is `torch.cuda.is_available() == False` — which
+reads exactly like a broken GPU rather than a wrong wheel. Pointing uv at
+PyTorch's index was not enough either: an unnamed `[[tool.uv.index]]` is still
+just another index, and resolution went back to PyPI. It needs a NAMED index with
+`explicit = true` plus a `[tool.uv.sources]` binding, or torch quietly stays on
+CPU:
+
+```toml
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+```
+
+`2.14.0+cu130`, `cuda available: True`, 15.8GB free on the 4080. Reranking 200
+candidates takes **253ms warm**, against the 8 minutes TEI spent not finishing a
+warm-up on CPU.
+
+**Consequences.** The TEI compose service is deleted rather than left in place —
+a service that cannot work is a trap for whoever reads the file next. Two real
+costs stay: the containerised backend cannot rerank, because torch is not in that
+image and the GPU is not either (the same honest limitation ingest already has),
+and `RERANK_DEVICE=cuda` is now checked loudly at load, because
+sentence-transformers falls back to CPU without saying so and a CPU eval is not a
+slower measurement, it is an unusable one.
+
+**What to take from this.** Three separate layers each failed silently and in the
+direction of "still works, just worse": Ollama 404s an endpoint that does not
+exist, TEI warns and continues on CPU, and torch installs a CPU wheel without
+complaint. None of them raised. The 8-minute warm-up was the only reason any of
+it got noticed at all — and the thing that actually isolated the Docker fault was
+reproducing it OUTSIDE compose, which took one command and should have been the
+first thing I did rather than the fifth.
+
+---
+
 ## 2026-09-07 — Built the instrument that three changes had to go without
 
 **What broke.** Nothing, this time - the gap was in the measurement. Three parser
