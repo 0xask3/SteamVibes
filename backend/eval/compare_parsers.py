@@ -51,6 +51,15 @@ QUERIES = [
     # filters just extracted. Resident Evil carries `Horror`, so this excluded
     # Horror in SQL while appending it to the text being embedded.
     "like resident evil but nothing scary",
+    # A ONE-WORD title, which could not be matched at all: _word_ngrams only
+    # makes 2-to-5 word windows, so `Hades` was unreachable despite 279,741
+    # reviews. Must borrow Hades' tags and exclude it. See failures.md #35.
+    "roguelikes similar to hades, except hades",
+    # `beliebte` is the ordinary German inflection and fired NOTHING: _POPULAR
+    # carried bare `beliebt` next to `bekannt\w*`. The filter line must show
+    # `>= 1,000 reviews`, and semantic_query must not still say "beliebte".
+    # See failures.md #34.
+    "beliebte Aufbauspiele",
     "gemütliches Aufbauspiel für zwei",
     "entspanntes Spiel zum Abschalten",
     "rundenbasierte Strategie mit Koop-Modus",

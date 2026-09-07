@@ -52,14 +52,43 @@ MULTIPLAYER_TAGS = frozenset(
 )
 
 # Below this a name is too generic to be a deliberate reference. "Beat", "GAME"
-# and "Doll" are all real titles.
-MIN_NAME_LENGTH = 6
+# and "Doll" are all real titles, and all four characters.
+#
+# 5, not 6, or `Hades`, `Stray` and `Forza` cannot be reached at all. Loosening
+# it applies to the multi-word candidates too, so it was measured across the
+# whole function rather than reasoned about: false positives over the 118 eval
+# queries stay at 4, exactly where they were. The real guard here has always
+# been TITLE_MATCH_MIN_REVIEWS - `Nothing` is seven characters and still cannot
+# match, because it has 9,260 reviews against a floor of 50,000.
+MIN_NAME_LENGTH = 5
 
 # Detected in code rather than added to the parser prompt: that prompt is
 # saturated, and three separate edits to it have now silently destroyed a
 # working filter (failures.md #13, #22). A missed phrasing costs one unwanted
 # result; a broken prompt costs a filter across every query.
 _EXCLUDERS = r"(?:not|non|no|except|excepting|excluding|exclude|without|minus|besides)"
+
+# A word introduced by one of these is being NAMED, so it is worth testing as a
+# title even standing alone. Without this, `_word_ngrams` only produces 2-to-5
+# word windows and a one-word title can never be a candidate at all: `Hades` has
+# 279,741 reviews and no two-word window from "roguelikes similar to hades"
+# prefixes it. That silently broke tag borrowing for every single-word title -
+# Hades, Stray, Terraria, Factorio, Undertale - and for anyone typing just the
+# franchise word ("like forza").
+#
+# The cue is what makes it safe, and the alternative was measured: generating
+# every single word instead takes false positives over the 118 eval queries from
+# 4 to 24, because a bare word is not a claim about a title. "cozy farming sim
+# with fishing" matched Farming Simulator 22, and "first person puzzle game"
+# matched Persona 5 Royal - `person` prefixes `Persona`. Six wrong tags then go
+# into semantic_query. Gated on a cue it finds the same six titles and leaves
+# false positives at 4. See failures.md #35.
+_REFERENCE_CUE = re.compile(
+    r"\b(?:like|similar\s+to|such\s+as|reminiscent\s+of|comparable\s+to"
+    r"|excluding|exclude|except|without|besides|minus"
+    r"|wie|ähnlich\s+wie|außer|ausser|ohne)\s+([\w'®™:-]+)",
+    re.IGNORECASE,
+)
 
 # "not including itself", "but not that one" - the game is referred to, not named.
 _EXCLUDE_SELF = re.compile(
@@ -213,7 +242,17 @@ def _find_referenced_game(query: str) -> tuple[str, int, list[str], str | None] 
     Most-reviewed wins, so "dark souls" resolves to DARK SOULS III rather than
     an obscure entry in the same franchise.
     """
-    candidates = [gram for gram in _word_ngrams(query) if len(gram) >= MIN_NAME_LENGTH]
+    # Cued singles go on the END, after the longest-first windows, so a
+    # multi-word title still wins: "excluding call of duty" must resolve the
+    # phrase to `call of duty`, not to the cued `call`. That phrase is what
+    # wants_reference_excluded() looks for an excluder in front of, so the order
+    # is load-bearing beyond just picking the right game.
+    cued = [m.group(1) for m in _REFERENCE_CUE.finditer(query)]
+    candidates = [
+        gram
+        for gram in _word_ngrams(query) + cued
+        if len(gram) >= MIN_NAME_LENGTH
+    ]
     if not candidates:
         return None
 

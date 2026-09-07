@@ -217,6 +217,22 @@ Two categories, and I'll say which one we're in at the top of each session:
   `TITLE_MATCH_MIN_REVIEWS=50000` is load-bearing, not tuning — common words
   are real titles (`Nothing` has 9,260 reviews, plus `Something`, `Dollar`,
   `SELF`, `Beat`), so a lower floor makes "nothing scary" match a horror game.
+- A ONE-WORD title is only a candidate when a reference CUE precedes it.
+  `_word_ngrams` makes 2-to-5 word windows, and its docstring's claim that "one
+  of them is the game's name, or its opening" is false for a one-word name —
+  `Hades` has 279,741 reviews and was unreachable, as were Stray, Terraria,
+  Factorio, Undertale and anyone typing just "like forza". Generating every
+  single word instead is far WORSE than the bug and was measured: false positives
+  over the 118 eval queries go from 4 to 24, because a bare word is not a claim
+  about a title ("first person puzzle" matched `Persona 5 Royal` — `person`
+  prefixes `Persona`), and each one appends six wrong tags to `semantic_query`.
+  Gated on `_REFERENCE_CUE` it finds the same six titles and leaves false
+  positives at 4. Cued singles are appended AFTER the longest-first windows, so
+  "excluding call of duty" still resolves `phrase` to `call of duty` and not
+  `call` — and `phrase` is what `wants_reference_excluded` looks for an excluder
+  in front of, so that order is load-bearing twice. `MIN_NAME_LENGTH` is 5, not
+  6, or `Hades`/`Stray`/`Forza` stay blocked. Re-measure the 4/118 before
+  widening the cue list. See failures.md #35.
 - `reference_game`, `excluded_app_ids` and `min_reviews` are stripped from the
   schema handed to Ollama, in `_llm_schema()`. All three are derived in code.
   Left in, the model invents plausible app_ids, and a wrong one silently
@@ -239,6 +255,25 @@ Two categories, and I'll say which one we're in at the top of each session:
   filter returns too much, a backwards one returns confidently wrong results.
   There is no `wants_multiplayer()` on purpose: "no multiplayer" contains
   "multiplayer". See failures.md #32.
+- A constraint converted into a FILTER must stop steering the vector. Two
+  separate leaks of this one rule: `apply_reference` borrowing contradictory tags
+  (#32), and `wants_popular()` setting `min_reviews` while leaving the word
+  `popular` in `semantic_query` — which then gets embedded and compared against
+  descriptions, where it says nothing about what a game IS. That leaked on 8 of 9
+  queries that asked for it. `_strip_popular()` reuses `_POPULAR` itself so the
+  trigger and the removal cannot drift apart, and it is guarded twice: skipped
+  when nothing would be left (a query of literally "popular" — `parse_query`'s
+  empty check runs BEFORE `_apply_code_rules` and cannot catch it), and run
+  before `apply_reference`, which would otherwise have the regex swept across its
+  borrowed tag list. `wants_reference_excluded` STILL leaks this way and is worse
+  — "excluding call of duty" embeds the excluded franchise's own name. Any new
+  code rule needs to answer both halves: what filter does it set, and what does
+  it remove from the text. See failures.md #34.
+- German needs `\w*` on every adjective in a regex, because it inflects.
+  `_POPULAR` carried bare `beliebt` next to `bekannt\w*`, so `beliebte
+  Aufbauspiele` — the ordinary form, and the only one anyone writes — fired NO
+  filter at all. Check the inflections, and check the near-miss: `beliebig`
+  ("arbitrary") must not match, and does not, because it diverges before the `t`.
 - `apply_reference` must never borrow a tag that contradicts the filters just
   extracted. The referenced game's tags describe the GAME, not the request, so
   "like resident evil but nothing scary" excluded `Horror` in SQL while
@@ -426,7 +461,7 @@ filter the parser extracts can only shrink the result set. Strip the tag arrays
 out of the schema and `--parse` scores exactly the no-parse baseline. Judge
 constraint extraction with `compare_parsers.py`, not with recall.
 
-Failure modes: `backend/eval/failures.md`, 33 documented with mechanisms. That
+Failure modes: `backend/eval/failures.md`, 35 documented with mechanisms. That
 file is the raw material for `eval/queries.yaml` and for the README's "what
 does not work" section.
 

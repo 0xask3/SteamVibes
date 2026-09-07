@@ -4,6 +4,72 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-07 — A one-word title was unreachable, and the obvious fix was worse
+
+**What broke.** Went to fix the exclusion-phrase leak that #34 called "arguably
+worse" than the popularity one. It is not — the excluder word survives in 2 of 8
+phrasings, not 8 of 9, and what stays behind is a real game name, which is useful
+signal rather than noise. But four of those eight queries excluded nothing at
+all: `without skyrim`, `except hades`, `not forza` all found no reference.
+
+**What I tried.** Split reference-matching from excluder-matching, which showed
+the excluder logic was fine and `_find_referenced_game` was the problem.
+`_word_ngrams` only makes 2-to-5 word windows, so a one-word name can never be a
+candidate — `Hades` has 279,741 reviews and nothing prefixes it. `MIN_NAME_LENGTH
+= 6` blocked it again at five characters. Not an exclusion bug at all: `like
+hades` borrowed no tags either, which is the whole point of `title_lookup`.
+
+Then measured the obvious fix before shipping it, and it was much worse than the
+bug: generating every single word takes false positives over the 118 eval queries
+from 4 to 24 — "first person puzzle game" matched `Persona 5 Royal`, because
+`person` prefixes `Persona` — and each false positive appends six wrong tags to
+`semantic_query`.
+
+**What fixed it.** `_REFERENCE_CUE`: a single word is only a candidate when
+`like` / `similar to` / `excluding` / `wie` / `ohne` and friends precede it. Six
+of seven titles found, false positives unchanged at 4/118 with the same four
+identities. `_word_ngrams` untouched, cued singles appended after the
+longest-first windows so `call of duty` still beats `call`, and `MIN_NAME_LENGTH`
+5 so Hades/Stray/Forza are reachable.
+
+Consequences: `skyrim` is still unreachable and should be — the real name is `The
+Elder Scrolls V: Skyrim` and no query prefix opens it, which is the prefix-match
+limitation from #21/#23. And the eval cannot score any of this; the 118 queries
+serve as a false-positive corpus, not a recall measure. See failures.md #35.
+
+---
+
+## 2026-09-07 — A filter that also stayed in the query vector
+
+**What broke.** Asked why "a game where we play as a cat exploring city or ruins,
+which is also popular" did not return Stray. Stray was not the bug — it sits at
+cosine rank 20 and RRF at `w=0.20` cannot lift that past rank-1 matches — but the
+parse showed something else: `min_reviews: 1000` correctly extracted, and
+`semantic_query: 'cat exploring city or ruins popular'`. The word was still being
+embedded after it had already become a SQL filter.
+
+**What I tried.** Checked how general it was rather than fixing the one case: the
+popularity word survived into `semantic_query` on 8 of 9 queries that asked for
+it. Then tested the German side and found a second bug — `_POPULAR` carried bare
+`beliebt` next to `bekannt\w*`, so `beliebte Aufbauspiele`, the only form anyone
+actually writes, fired no filter at all.
+
+**What fixed it.** `_strip_popular()` next to `wants_popular()`, reusing
+`_POPULAR` itself so the trigger and the removal cannot drift apart, called from
+the branch that sets `min_reviews`. Guarded twice: skipped when stripping would
+leave nothing (`parse_query`'s empty check runs before `_apply_code_rules`), and
+run before `apply_reference` so the regex never sweeps the borrowed tag list.
+Plus `beliebt\w*`; `beliebig` correctly still does not match.
+
+Consequences: this is justified by correctness, not by a number. Stray moves from
+rank 20 to 17 and is still not in the top 10, and no eval query contains a
+popularity word so recall cannot see the change at all. The same leak is still
+open in `wants_reference_excluded` — "excluding call of duty" embeds the excluded
+franchise's own name, pulling the vector toward exactly what SQL is removing. See
+failures.md #34.
+
+---
+
 ## 2026-09-07 — The schema let the model skip fields, and the tags were ANDed
 
 **What broke.** `game that feels like call of duty, but no wars on linux under

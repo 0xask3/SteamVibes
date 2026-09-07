@@ -99,15 +99,45 @@ capitals:
 # `multiplayer` on another. Third confirmation that the prompt is full; see
 # failures.md #22. Numbers in the query ("at least 500 reviews") are NOT
 # handled as a result, which is the price of not touching the prompt.
+#
+# `beliebt\w*`, not bare `beliebt`, to match the `bekannt\w*` beside it. Nobody
+# writes the uninflected adjective: "beliebte Aufbauspiele" is the ordinary
+# form, and it fired NOTHING until the wildcard was added. `beliebig`
+# ("arbitrary") is safely excluded - it diverges before the `t`.
 _POPULAR = re.compile(
-    r"\b(?:popular|well[-\s]known|famous|best[-\s]?selling|beliebt|bekannt\w*)\b",
+    r"\b(?:popular|well[-\s]known|famous|best[-\s]?selling|beliebt\w*|bekannt\w*)\b",
     re.IGNORECASE,
 )
+
+# Punctuation stranded by removing a word mid-sentence: "..., which is also
+# popular" would otherwise leave a trailing "which is also" and a dangling
+# comma in the text being embedded.
+_DANGLING = re.compile(r"[\s,;.]+$|^[\s,;.]+")
 
 
 def wants_popular(query: str) -> bool:
     """True when the query asks for widely-played games."""
     return _POPULAR.search(query) is not None
+
+
+def _strip_popular(query: str) -> str:
+    """Remove the popularity words that `min_reviews` has already consumed.
+
+    Uses the same pattern that detected them, so the trigger and the removal
+    cannot drift apart.
+
+    A constraint converted into SQL must stop steering the vector. "popular"
+    says nothing about what a game IS, so leaving it in `semantic_query` embeds
+    a word that can only match noise - it survived into the embedded text on 8
+    of 9 queries that asked for it. Same class as failures.md #32, where
+    borrowed tags contradicted the filters just extracted.
+
+    Returns "" when the query was nothing but popularity words; the caller
+    decides what to do about that rather than embedding an empty string.
+    """
+    cleaned = _POPULAR.sub(" ", query)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return _DANGLING.sub("", cleaned).strip()
 
 
 # Same reasoning as _POPULAR, from a different direction: `multiplayer` IS in
@@ -337,6 +367,16 @@ def _apply_code_rules(parsed: ParsedQuery, text: str) -> ParsedQuery:
     if parsed.min_reviews is None and wants_popular(text):
         parsed.min_reviews = settings.popular_min_reviews
         logger.info("query asks for popular, min_reviews=%d", parsed.min_reviews)
+        # Strip in the same branch that consumed the intent, so the filter and
+        # the text can never disagree about whether it was handled. Guarded:
+        # parse_query's empty-semantic_query check runs BEFORE this function, so
+        # it cannot catch a query of literally "popular" - embedding "" would be
+        # worse than embedding a useless word.
+        stripped = _strip_popular(parsed.semantic_query)
+        if stripped:
+            parsed.semantic_query = stripped
+        else:
+            logger.info("not stripping %r - nothing would be left", parsed.semantic_query)
 
     # Fills, never overrides - the same shape as the rule above. The model was
     # only ever observed returning NO value here, not a wrong one, and an

@@ -1485,3 +1485,177 @@ re-parse and stays at 0.095s.
 3. **An eval made of pure descriptions cannot price constraint extraction.** It
    can only punish it. Before reading a `--parse` number as a verdict on the
    parser, check whether any query in the set contains the thing being parsed.
+
+---
+
+### 34. The constraint became a filter and stayed in the query vector anyway (2026-09-07)
+
+**Found while answering a different question.** "I need a game on which we play
+as a cat exploring city or ruins, which is also popular" did not return Stray.
+Stray is not the bug - see the bottom of this entry - but the parse was:
+
+```
+required_tags: ['Cats']   min_reviews: 1000
+semantic_query: 'cat exploring city or ruins popular'
+```
+
+`wants_popular()` had correctly converted the intent into a 1,000-review floor
+and then left the word `popular` sitting in `semantic_query`, where it gets
+embedded and compared against game descriptions. It says nothing about what a
+game IS, so it can only match noise.
+
+**It leaked on 8 of the 9 queries that asked for it** - `popular`, `famous`,
+`well-known`, `best-selling`, German `bekannte`. The one that escaped only did so
+because the model happened to rewrite that sentence anyway.
+
+This is #32's lesson in a new place. There it was `apply_reference` appending
+tags that contradicted the filters just extracted; here it is a word that has
+already become SQL still steering the vector. **A constraint that has been
+converted into a filter must stop influencing the embedding**, and nothing in
+the codebase was enforcing that as a rule rather than case by case.
+
+**A second bug in the same regex, found by testing the German side.**
+`_POPULAR` listed `bekannt\w*` with a suffix wildcard but `beliebt` bare. Nobody
+writes the uninflected adjective - "beliebte Aufbauspiele" is the ordinary form -
+so `beliebte`, `beliebten`, `beliebtesten` and `Beliebtheit` **fired nothing at
+all**. German queries asking for popular games silently got no review floor. The
+fix is one wildcard; `beliebig` ("arbitrary") is safely excluded because it
+diverges before the `t`, which was checked rather than assumed.
+
+**Fix.** `_strip_popular()` beside `wants_popular()`, reusing `_POPULAR` itself so
+the trigger and the removal cannot drift apart, called from the same branch that
+sets `min_reviews`. Two guards worth keeping:
+
+- `parse_query`'s existing empty-`semantic_query` check runs BEFORE
+  `_apply_code_rules`, so it cannot catch this. A query of literally "popular"
+  strips to nothing, and embedding "" is worse than embedding a useless word - so
+  the strip is skipped when nothing would be left.
+- It runs before `apply_reference`, which appends the referenced game's tags to
+  `semantic_query`. Stripping afterwards would run the regex across the borrowed
+  tag list.
+
+**What it is worth, stated honestly.** Stray moves from cosine rank 20 to 17 and
+is still not in the top 10. This is not a fix for the reported symptom and should
+not be read as one: Stray loses because RRF at `w=0.20` cannot lift a rank-20
+result past rank-1 cosine matches, however popular it is - `1/80 + 0.20/61`
+against `1/61 + 0.20/62`. It surfaces at `w=0.40` (8th) and `w=1.00` (2nd), and
+CLAUDE.md already records what those weights cost the long tail. The real answer
+there is the prominence term the README names as the top open weakness.
+
+So this change is justified by correctness, not by a number: a filter leaking
+into the query vector is wrong regardless of whether any labelled query notices.
+The eval cannot notice - no query in `queries.yaml` contains a popularity word
+(all 9 grep hits are comments) - which is the same blindness #33 documented.
+
+**Known limitation, not papered over.** The words can be content rather than
+constraint: "play as a famous detective" now loses "famous". That reading was
+already wrong before the change - `wants_popular` fired and set `min_reviews`
+regardless - so this makes an existing misreading slightly worse rather than
+introducing a new one. The prompt cannot arbitrate it; per CLAUDE.md it is full.
+On the fallback path (model failure, `semantic_query` = raw text) the strip can
+also leave a fragment like "which is also", since it removes words and
+punctuation but not filler.
+
+**Same class, still open, and the claim I first made about it was WRONG.**
+This entry originally said `wants_reference_excluded` leaks identically and is
+"arguably worse". Measured across 8 exclusion phrasings, the excluder word
+survives in **2**, not 8 of 9 - and where it survives, what stays in the text is
+a real game name, which is semantically rich and points at the neighbourhood the
+user actually wants. Stripping it changed the results but not visibly for the
+better. `popular` is noise about games; `call of duty` is not. Corrected in #35,
+which is where measuring this properly led somewhere much more useful.
+
+---
+
+### 35. A one-word game title could never be recognised (2026-09-07)
+
+**Found by trying to confirm #34's last paragraph, which turned out to be wrong.**
+Checking whether `wants_reference_excluded` leaks the way `wants_popular` did, I
+ran eight exclusion phrasings. The leak was minor - 2 of 8, not 8 of 9 - but four
+of the eight excluded **nothing at all**:
+
+```
+open world rpg without skyrim               NO REFERENCE FOUND
+roguelikes similar to hades, except hades   NO REFERENCE FOUND
+racing games like forza but not forza       NO REFERENCE FOUND
+```
+
+Not the excluder logic, which works whenever a reference is found - Call of Duty
+and Dark Souls both exclude correctly. `_find_referenced_game` never found the
+game.
+
+**Mechanism.** `_word_ngrams` builds 2-to-5 word windows, and its docstring says
+"one of them is the game's name, or its opening". For a ONE-WORD name that is
+false: `Hades` has 279,741 reviews and no two-word window from "roguelikes
+similar to hades" prefixes it. `MIN_NAME_LENGTH = 6` blocked it twice over, since
+"hades", "stray" and "forza" are five characters.
+
+So this was never really an exclusion bug. It silently broke tag borrowing for
+every single-word title and for anyone typing just the franchise word - `like
+hades`, `like stray`, `like terraria`, `like factorio`, `like forza` all borrowed
+nothing, which defeats the entire reason `title_lookup` exists (#20: the
+embedding cannot get from a name to `Souls-like`).
+
+**The obvious fix is much worse than the bug, and this is the number that
+mattered.** Generating single-word candidates, scored against the 118 eval
+queries - none of which deliberately names a game, so every hit is a false
+positive:
+
+| config | titles found | false positives |
+| --- | --- | --- |
+| shipped (2-5 word windows, min_len 6) | 0/7 | 4/118 |
+| every single word, min_len 6 | 3/7 | 18/118 |
+| every single word, min_len 5 | 6/7 | **24/118** |
+
+A wrong reference appends six wrong tags to `semantic_query`, so that is a fifth
+of ordinary queries actively corrupted:
+
+```
+cozy farming sim with fishing          -> Farming Simulator 22
+first person puzzle game with portals  -> Persona 5 Royal   ("person" prefixes "Persona")
+chaotic co-op cooking party game       -> Party Animals
+rhythm game where you move to the beat -> To the Moon
+```
+
+**Fix: a single word counts only after a reference CUE.** "similar to hades"
+names a game; "cooking party game" does not, and the difference is a word in
+front. `_REFERENCE_CUE` captures the token after `like` / `similar to` /
+`such as` / `excluding` / `except` / `without` / German `wie` / `ohne` and friends,
+and those captures are appended to the candidate list:
+
+| config | titles found | false positives |
+| --- | --- | --- |
+| shipped | 0/7 | 4/118 |
+| **cued singles, min_len 5** | **6/7** | **4/118** |
+
+Identical to the count it started at, and the same four identities - so the
+titles are free. `_word_ngrams` itself is untouched, so the multi-word path
+cannot regress, and cued singles are appended AFTER the longest-first windows so
+`excluding call of duty` still resolves `phrase` to `call of duty` rather than
+`call`. That ordering is load-bearing twice over: `phrase` is also what
+`wants_reference_excluded` looks for an excluder in front of.
+
+`MIN_NAME_LENGTH` went 6 -> 5, which loosens the multi-word path too. That was
+measured across the whole function rather than argued: false positives did not
+move. The docstring's cautionary titles (`Beat`, `GAME`, `Doll`) are four
+characters and stay blocked, and the real guard was always
+`TITLE_MATCH_MIN_REVIEWS` - `Nothing` is seven characters and cannot match at any
+length, because 9,260 reviews is under the 50,000 floor.
+
+**Still broken on purpose.** `without skyrim` finds nothing, and should: the real
+name is `The Elder Scrolls V: Skyrim`, so no prefix of any query opens it. That
+is the documented prefix-match limitation (#21, corrected by #23) and it wants
+trigram matching, not this.
+
+**What to take from this.** The bug was invisible because it fails silently and
+in the direction of doing less - no error, no log line, just a query that quietly
+does not borrow tags. It was only found by testing a DIFFERENT hypothesis that
+turned out to be wrong. Two entries in a row have now been improved by measuring
+the thing I was about to assert instead of asserting it (#33's four flapping
+queries, #34's "arguably worse"), and both times the correction was worth more
+than the original claim.
+
+Also worth naming: the eval cannot score this at all. No query in `queries.yaml`
+deliberately references a game, so the 118 serve as a false-positive corpus
+rather than a recall measure. That is the third distinct thing #33's "the eval
+cannot referee a parser change" applies to.
