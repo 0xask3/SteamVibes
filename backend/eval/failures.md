@@ -1768,3 +1768,125 @@ guard that catches the dangerous one - a measurement contaminated by its own
 fallback - did not exist until it had already produced a wrong table, which is
 the third time this project has learned that a harness needs testing against a
 known-bad input before its output means anything (#33, run_parse_eval, this).
+
+---
+
+### 37. The reranker I recorded as "not measured" was the best one (2026-09-07)
+
+**#36 shipped `bge-reranker-v2-m3` having excluded `Qwen3-Reranker-0.6B` as NOT
+MEASURED rather than worse** - it had scored 8.1% overall against a 60.5%
+baseline, and the tell was that on a three-document probe it ordered correctly
+with a score spread of 0.121 against bge's 0.865. Right order, no conviction.
+The cause was the invocation: the seq-cls conversion still needs Qwen's chat
+template, and the yes/no logit it was trained to emit lands after one exact
+assistant preamble. Handed a bare `(query, document)` pair it has almost no
+opinion.
+
+`_pair_for()` in app/rerank.py now wraps a pair however the model wants it -
+the reranker's version of `_MODEL_PREFIXES` in app/embedding.py. Same probe,
+after:
+
+```
+                spread   before -> after
+bge             0.8645   (unchanged, takes the raw pair)
+qwen3           0.9874   was 0.1210
+```
+
+**It wins, and by more than bge won.**
+
+| config | overall | core | specific | tail | DE | under 1k | rerank |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `rrf w=0.20` | 60.5 | 17.8 | 79.5 | 70.5 | 42.6 | 74% | - |
+| bge fused | 66.1 | 20.0 | 88.6 | 75.0 | 40.7 | 73% | 264ms |
+| **qwen3 fused** | **68.8** | **27.2** | 88.6 | **77.3** | **51.9** | 71% | 1,021ms |
+
++8.3 over the two-stage baseline, +2.7 over bge, and the tail-cost
+counter-metric is slightly BETTER at 71% under 1k, so none of it is bought by
+deleting the long tail. Reproduced identically across two runs.
+
+**The mechanism is instruction-following, and it is visible rather than
+inferred.** bge scores -0.01 on FollowIR - at chance - so it can only answer
+"how related are these two texts". Qwen3 can be told what relevance means. That
+predicts it should win exactly where bge was weakest, and it does. #36's own
+counter-example, the query the popularity weight exists for:
+
+| config | Cities: Skylines II for "city builder" |
+| --- | --- |
+| `rrf w=0.20` | rank 1 |
+| bge | rank 37 |
+| **qwen3** | **rank 1** |
+
+bge demotes it because a 78-review game literally NAMED `City Builder` is more
+topically related to that string. Qwen3's top three are Cities: Skylines II
+(73,524 reviews), TheoTown (3,309) and Kingdoms Reborn (9,113) - all real,
+well-regarded city builders. So the `core` gain is not a labelling artifact: the
+tier moved 17.8 -> 27.2 AND the mechanism probe moved with it, which is the
+first time those two have agreed in this project.
+
+**The German result is the largest single movement, and the least trustworthy.**
+Aggregate DE goes 42.6 -> 51.9, and `specific` DE goes 55.6 -> 77.8 while the
+EN/DE gap on that tier collapses from 30.2 to 13.7. README calls German the
+project's second-biggest weakness and says "a German document field is the fix
+and it is not built" - it may not need to be. But `specific` DE is **n=9**, so
+77.8% against 55.6% is seven queries against five, a two-query swing, and this
+file's own floor is ~2.5 points at n=44. Treat it as a strong hint worth
+building a bigger German set for, NOT as a 22-point result.
+
+**Latency is 4x, 1,021ms against bge's 264ms**, and it was nearly recorded
+wrong. The first run reported p95 6,234ms against a 1,105ms median, which is not
+a tail - it is one query. The first batch of a given SHAPE pays CUDA kernel
+selection: 9,668ms for the first 200-pair call against a 963ms steady state,
+landing on whichever query happened to go first. `verify_rerank_model()` was
+warming up with a 2-pair probe, which does not trigger the same kernels. Warming
+at full pool size moves p95 to 1,376ms. A warm-up that does not match the real
+shape is not a warm-up.
+
+**What to take from this.** #36 was right to record 8.1% as NOT MEASURED instead
+of as a verdict, and that discipline is the only reason this was ever revisited -
+a table saying "Qwen3: 8.1%" would have closed the question permanently. The
+cheap check that caught it was comparing SCORE SPREAD on a known-ordered triple,
+which takes one command and would have flagged the mis-invocation before an eval
+ever ran. Do that before believing any reranker's recall number.
+
+**Correction, same day, after being asked to be sure.** The tables above are
+point estimates and I presented them as findings. A paired bootstrap over
+queries (10,000 resamples) and a sign test say only ONE of the three
+comparisons survives:
+
+| comparison | diff | 95% CI | sign test |
+| --- | --- | --- | --- |
+| qwen3 - baseline | +8.3% | **[+2.5%, +14.5%]** | 15-4, p=0.0096 |
+| bge - baseline | +5.6% | [-0.1%, +11.9%] | 13-7, p=0.132 |
+| **qwen3 - bge** | **+2.7%** | **[-2.1%, +7.6%]** | 11-5, p=0.105 |
+
+**Qwen3 and bge are NOT distinguishable on recall** - not overall, not on
+`core` (+7.2% [-1.7%, +16.1%]), not on `specific` (+0.0%), not on German. 102
+of the 118 queries return identical recall for the two models; the entire
+difference is 11 wins against 5 losses, and 12-4 would have been needed for
+p<0.05. #36's headline "+5.6 points" for bge over the two-stage baseline is
+marginal by the same test, with a lower bound of -0.1%.
+
+What survives: **reranking beats not reranking**, with Qwen3 at
++8.3% [+2.5%, +14.5%] overall and +9.1% [+2.3%, +18.2%] on `specific`. That is
+the claim this work supports.
+
+So the model choice cannot be made on recall, and the tiebreak is the mechanism
+probe, which is DETERMINISTIC rather than sampled: bge drops Cities: Skylines II
+from rank 1 to 37 for "city builder" and Qwen3 holds it at 1. That is a
+reproducible behaviour on a query class the eval cannot score, not a
+sampling artifact - and it costs 4x the latency, 1,021ms against 264ms. Qwen3
+stays the default because latency was explicitly not a constraint here; on a
+latency budget bge is the same recall for a quarter of the cost.
+
+The German result specifically does NOT survive and should not be repeated:
+5-2 on discordant queries, p=0.227. It remains a reason to build a bigger
+German set, which was already the conclusion, and nothing more.
+
+**What to take from this.** Three of these arms were reported as results before
+anyone asked whether they could be told apart, and n=118 with ~100 ties has far
+less power than a 118-query eval sounds like it has. This file's stated floor
+("~1 point at n=118") came from EMBEDDING reproducibility - re-running the same
+config - and that is a different and much smaller quantity than the uncertainty
+in a difference between two configs. Reproducible is not the same as
+distinguishable. Run the paired test before writing the table, not after being
+challenged on it.

@@ -146,12 +146,12 @@ class Settings(BaseSettings):
     # bi-encoder embeds query and document separately and never reads them
     # together; a cross-encoder does. Ceiling: 112 of 148 targets are in the
     # pool at all, so 75.7% overall is the most any reranker can produce here.
-    # Default is `rerank` on measurement: 66.1% overall against rrf's 60.5%,
-    # specific 88.6 against 79.5, tail 75.0 against 70.5, with the tail-cost
-    # counter-metric flat (73% under 1k against 74%) - so it is not buying
-    # recall by deleting the long tail. 264ms median for that. See failures.md
-    # #36. docker-compose overrides this back to `rrf` because the container has
-    # neither torch nor the GPU.
+    # Default is `rerank` on measurement: 68.8% overall against rrf's 60.5%,
+    # core 27.2 against 17.8, specific 88.6 against 79.5, tail 77.3 against
+    # 70.5, with the tail-cost counter-metric slightly BETTER (71% under 1k
+    # against 74%) - so it is not buying recall by deleting the long tail.
+    # See failures.md #36. docker-compose overrides this back to `rrf` because
+    # the container has neither torch nor the GPU.
     rank_method: Literal["none", "log", "rrf", "rerank"] = "rerank"
     popularity_weight: float = 0.20
 
@@ -168,7 +168,26 @@ class Settings(BaseSettings):
     # Changing this changes what the ranking MEANS, so a bake-off arm is one
     # .env line plus a restart - and verify_rerank_model() refuses to let an
     # eval run against a model that did not actually load.
-    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    # Qwen3 and bge-reranker-v2-m3 are NOT distinguishable on recall: +2.7%
+    # overall with a 95% CI of [-2.1%, +7.6%], 11 wins to 5, and 102 of 118
+    # queries identical. Do not quote the point estimate as a win.
+    #
+    # It is the default on a DETERMINISTIC behaviour instead, which the eval
+    # cannot score and a bootstrap therefore cannot doubt: for "city builder"
+    # bge drops Cities: Skylines II to rank 37, because a 78-review game NAMED
+    # `City Builder` is more literally related, while Qwen3 holds it at rank 1.
+    # That is the instruction-following difference - bge scores -0.01 on
+    # FollowIR, at chance, so it can only answer "how related are these two
+    # texts", which is not the question a vibe search asks.
+    #
+    # Costs 4x the latency, 1,021ms against 264ms, for recall that cannot be
+    # told apart. On any latency budget, bge is the right call.
+    # See failures.md #36 and #37.
+    #
+    # The chat template in app/rerank.py is NOT optional decoration - handed a
+    # bare pair this model scores 8.1% overall, because the yes/no logit it was
+    # trained to emit lands after that exact assistant preamble.
+    rerank_model: str = "tomaarsen/Qwen3-Reranker-0.6B-seq-cls"
 
     # "cuda" or "cpu". CPU is not a slower version of this measurement, it is an
     # unusable one: TEI on CPU never finished warming up a 568M cross-encoder,
@@ -183,6 +202,20 @@ class Settings(BaseSettings):
     # 16GB. Lower this before lowering the pool if VRAM gets tight: the pool
     # size decides which targets are REACHABLE, this only decides how fast.
     rerank_batch_size: int = 128
+
+    # The task description handed to an INSTRUCTION-FOLLOWING reranker. Ignored
+    # by models that do not take one - bge-reranker-v2-m3 scores -0.01 on
+    # FollowIR, i.e. at chance, and has no way to receive this at all.
+    #
+    # It is a tuned prompt, so it is a setting rather than a constant: three
+    # separate prompt edits in this project have silently destroyed a working
+    # filter (failures.md #13, #22, #32), and the only defence that has ever
+    # worked is being able to change one and re-run the eval. English on the
+    # model card's advice, even for German queries.
+    rerank_instruction: str = (
+        "Given a description of the feeling or content a player wants, retrieve "
+        "video games matching it."
+    )
 
     # Some rerankers ship a CUSTOM architecture and will not load without this -
     # gte-multilingual-reranker-base pulls `Alibaba-NLP/new-impl`. It means

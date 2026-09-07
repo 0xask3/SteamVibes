@@ -43,11 +43,65 @@ app/search.py is the only place that catches it.
 import logging
 import os
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Per-model input templates - the reranker's answer to app/embedding.py's
+# _MODEL_PREFIXES. A cross-encoder trained on a wrapped prompt returns near-zero
+# logits on a bare pair, and the failure is QUIET: on an easy triple Qwen3 still
+# orders correctly, with a score spread of 0.121 against bge's 0.865. Right
+# order, no conviction - fine on three documents, useless across 200 similar
+# games, and worth 8.1% recall against a 60.5% baseline. See failures.md #36.
+_QWEN3_SYSTEM = (
+    "<|im_start|>system\n"
+    "Judge whether the Document meets the requirements based on the Query and "
+    'the Instruct provided. Note that the answer can only be "yes" or "no".'
+    "<|im_end|>\n<|im_start|>user\n"
+)
+_QWEN3_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
+def _qwen3_pair(query: str, document: str) -> tuple[str, str]:
+    """Qwen3-Reranker's chat template, split across the CrossEncoder pair.
+
+    Both halves are load-bearing and neither is decoration: the model was
+    trained to emit a yes/no token at exactly that assistant preamble, and the
+    seq-cls conversion reads the same position. Dropping the suffix is what
+    produced the near-zero logits.
+    """
+    return (
+        f"{_QWEN3_SYSTEM}<Instruct>: {settings.rerank_instruction}\n<Query>: {query}\n",
+        f"<Document>: {document}{_QWEN3_SUFFIX}",
+    )
+
+
+# Matched as a FAMILY substring, which is a different rule from
+# app/embedding.py's exact-name match, and deliberately. There the exact name
+# matters because nomic-embed-text and nomic-embed-text-v2-moe want different
+# prefixes. Here every Qwen3-Reranker shares one template - across sizes, across
+# the seq-cls conversion, and across community re-uploads that keep the family
+# name in the id - so exact matching would silently mis-invoke all of them.
+_TEMPLATES: tuple[tuple[str, Callable[[str, str], tuple[str, str]]], ...] = (
+    ("qwen3-reranker", _qwen3_pair),
+)
+
+
+def _pair_for(model: str, query: str, document: str) -> tuple[str, str]:
+    """Wrap one (query, document) pair the way this model expects it.
+
+    The default is the raw pair, which is what bge and every classic
+    cross-encoder want.
+    """
+    lowered = model.lower()
+    for family, formatter in _TEMPLATES:
+        if family in lowered:
+            return formatter(query, document)
+    return query, document
+
 
 # Loaded once, lazily, behind a lock. Lazily because importing this module must
 # not cost a model load for the CLI paths and evals that never rerank; behind a
@@ -116,6 +170,25 @@ def _load() -> Any:
             raise RerankUnavailable(_load_failed) from exc
 
         _model, _model_name, _load_failed = model, settings.rerank_model, None
+
+        # Warm up at FULL POOL SIZE, not with a token pair. The first batch of a
+        # given shape pays CUDA kernel selection, and it is not small: Qwen3's
+        # first 200-pair call took 9,668ms against a 963ms steady state, which
+        # landed on whichever query happened to go first and put a 6.2s p95 in a
+        # results table whose real p95 is under a second. A 2-pair probe does not
+        # trigger the same kernels, so it has to be the real shape.
+        try:
+            filler = ["warmup document"] * settings.rerank_candidates
+            model.predict(
+                [_pair_for(settings.rerank_model, "warmup", d) for d in filler],
+                batch_size=settings.rerank_batch_size,
+                show_progress_bar=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - a slow first query, not a failure
+            logger.warning(
+                "reranker warm-up failed, first search will be slow: %s", exc
+            )
+
         logger.info(
             "cross-encoder %s loaded on %s",
             settings.rerank_model,
@@ -137,7 +210,7 @@ def rerank_scores(query: str, documents: list[str]) -> list[float]:
     model = _load()
     try:
         scores = model.predict(
-            [(query, doc) for doc in documents],
+            [_pair_for(settings.rerank_model, query, doc) for doc in documents],
             batch_size=settings.rerank_batch_size,
             show_progress_bar=False,
             convert_to_numpy=True,

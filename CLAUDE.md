@@ -334,15 +334,37 @@ Two categories, and I'll say which one we're in at the top of each session:
   `run_eval` refuses to print any table if a single query fell back: a run that
   is part baseline is not a weaker measurement, it is a different one wearing
   this model's label. See failures.md #36.
-- A cross-encoder is WORSE at short genre labels, and recall cannot see it.
-  For "city builder" - the query `w=0.20` exists to fix - Cities: Skylines II
-  goes from rank 1 to 37 fused and 52 pure, because the model rewards literal
-  topical match and a 78-review game named `City Builder` wins that. Meanwhile
-  `core` recall reports 17.8 -> 20.0, i.e. better, because core labels 2-3 games
-  out of hundreds that satisfy the query. That probe, not the tier, is why the
-  popularity term stays at 0.20 rather than 0: pure cross-encoder scores 77.3 on
-  tail against fused 75.0, but both sit at the n=44 floor while the probe does
-  not. Check a mechanism when a tier cannot price one.
+- A RELEVANCE-ONLY cross-encoder is worse at short genre labels, and recall
+  cannot see it. `bge-reranker-v2-m3` drops Cities: Skylines II from rank 1 to 37
+  for "city builder" - the query `w=0.20` exists to fix - because it rewards
+  literal topical match and a 78-review game NAMED `City Builder` wins that,
+  while `core` recall reports 17.8 -> 20.0, i.e. better, because core labels 2-3
+  games out of hundreds that satisfy the query. An INSTRUCTION-FOLLOWING
+  cross-encoder does not have this problem: Qwen3 puts it back at rank 1 and
+  takes `core` to 27.2, the first time in this project a tier and a mechanism
+  probe have agreed. bge scores -0.01 on FollowIR (at chance), Qwen3 5.41, and
+  that benchmark predicted this where MTEB-R did not. Check a mechanism when a
+  tier cannot price one - and prefer the model that can be TOLD what relevance
+  means, because "how related are these two texts" is not the question a vibe
+  search is asking.
+- A reranker's input TEMPLATE is load-bearing and its absence is silent.
+  `_pair_for()` in app/rerank.py wraps a pair the way each model expects, keyed
+  on the model name like `_MODEL_PREFIXES` - Qwen3 needs its system prompt,
+  `<Instruct>/<Query>/<Document>` tags and the assistant `<think>` preamble,
+  because the yes/no logit it was trained to emit lands at exactly that position.
+  Without it the model scored 8.1% overall and was nearly written off as bad.
+  Before believing ANY reranker's recall number, compare SCORE SPREAD on a
+  known-ordered triple: a mis-invoked model still ORDERS an easy triple correctly
+  and merely loses conviction (0.121 against a correct 0.987), which is fine on
+  three documents and useless across 200 similar games. One command, and it would
+  have caught this before an eval ever ran. `RERANK_INSTRUCTION` is a tuned
+  prompt and therefore a setting - see failures.md #37.
+- Warm up a GPU model at the shape it will actually run. The first batch of a
+  given size pays CUDA kernel selection - 9,668ms for the first 200-pair call
+  against a 963ms steady state - and a 2-pair probe does not trigger the same
+  kernels. That put a p95 of 6,234ms in a results table whose real p95 is
+  1,376ms, which is not a latency tail, it is one query. `_load()` warms at
+  `RERANK_CANDIDATES` for that reason.
 - `RERANK_CANDIDATES` stays 200 and that is measured, not inherited. Every
   `specific` target a reranker can reach is inside rank 100 and 8 of 9 `tail`
   ones are; 200 -> 500 buys 16 more targets of which 14 are `core`, the tier that
@@ -369,6 +391,14 @@ Two categories, and I'll say which one we're in at the top of each session:
   hard enough to stall a 1.2GB model at 9KB, which looks like a hang.
 - `HNSW_EF_SEARCH=200`, not pgvector's default of 40. The default cost 3.3
   recall points at threshold 10 (15.0% against the exact scan's 18.3%) for 8ms.
+- REPRODUCIBLE IS NOT DISTINGUISHABLE, and confusing the two produced three
+  wrong headlines in one session. The floors below measure re-running the SAME
+  config; the uncertainty in a DIFFERENCE between two configs is far larger. At
+  n=118 with ~100 tied queries a 2.7-point gap has a 95% CI of [-2.1%, +7.6%],
+  and 11 wins to 5 is p=0.105. Run a paired bootstrap over queries and a sign
+  test BEFORE writing a comparison table. `eval/` has no harness for this yet -
+  it was done in a scratch script - so build one if a fourth model is compared.
+  See failures.md #37.
 - Differences below ~2.5 points at n=44, or ~1 point at n=118, are NOT results.
   That is this eval's reproducibility floor, measured rather than guessed: two
   embeds of the same model on the same corpus move `tail` by 2.3 points, one
@@ -625,23 +655,33 @@ specific 79.5%, tail 70.5%, overall 60.5%, median 147 reviews returned, 74% unde
 1k, 84ms. (Measure the incumbent FIRST next time - measuring it second cost an
 extra 30-minute round trip back to the winner.)
 
-German is NOT a model problem. Arctic's `specific` gain is entirely English -
-65.7 -> 85.7 while German sits at 55.6% for both models - so swapping to the
-multilingual model bought 20 English points and zero German ones. The next thing
-to try is a German document field or query translation, not a fourth model.
+German is NOT an EMBEDDING model problem. Arctic's `specific` gain is entirely
+English - 65.7 -> 85.7 while German sits at 55.6% for both models - so swapping
+to the multilingual embedding model bought 20 English points and zero German
+ones. It may however be a RERANKER problem, which is new and unexpected:
+Qwen3-Reranker moves `specific` DE off that stuck 55.6% to 77.8% and collapses
+the tier's EN/DE gap from 30.2 to 13.7. Do not spend that number - `specific` DE
+is n=9, so it is a two-query swing and this file's floor is ~2.5 points at n=44.
+The German gain does NOT survive a paired test - 5 wins to 2, p=0.227 - so it is
+a reason to BUILD A BIGGER GERMAN SET and nothing more. Do not quote it as a
+result. failures.md #37.
 
 Ranking: THREE stages as of Weekend 4 - `rrf w=0.20` over a 200-candidate pool,
-then a `BAAI/bge-reranker-v2-m3` cross-encoder whose rank replaces the cosine one
-inside that same rrf sum. 66.1% overall against the two-stage 60.5%, `specific`
-88.6 against 79.5, `tail` 75.0 against 70.5, tail cost flat at 73% under 1k
-against 74%, 264ms median (p95 314ms). It is the DEFAULT in config.py and
-overridden back to `rrf` in docker-compose, because the container has neither
-torch nor the GPU. Weakness, and it is not in any tier: the cross-encoder demotes
-famous correct answers on short genre labels - Cities: Skylines II falls from
-rank 1 to 37 for "city builder" - while `core` recall says it improved. Two
-models were excluded for reasons that are NOT quality: gte-multilingual is
-incompatible with transformers 5.x, and Qwen3-Reranker was never correctly
-invoked (it needs its chat template). See failures.md #36.
+then a `Qwen3-Reranker-0.6B` cross-encoder whose rank replaces the cosine one
+inside that same rrf sum. **The claim this supports is that reranking beats not
+reranking: +8.3% overall [+2.5%, +14.5%] and +9.1% on `specific` [+2.3%, +18.2%],
+paired bootstrap over queries.** 68.8% overall against the two-stage 60.5%,
+1,021ms median. DEFAULT in config.py, overridden back to `rrf` in
+docker-compose because the container has neither torch nor the GPU.
+
+The MODEL choice is NOT supported by recall and must not be quoted as if it were.
+Qwen3 against `bge-reranker-v2-m3` is +2.7% [-2.1%, +7.6%], 11 wins to 5 with 102
+of 118 queries identical, sign test p=0.105. Nothing separates them - not `core`,
+not `specific`, not German. Qwen3 is the default on the DETERMINISTIC mechanism
+probe instead: bge drops Cities: Skylines II from rank 1 to 37 for "city
+builder", Qwen3 holds it at 1. On a latency budget bge is the same recall at a
+quarter of the cost. gte-multilingual is excluded as incompatible with
+transformers 5.x, which is NOT a quality judgement. See failures.md #36 and #37.
 
 Two-stage baseline, for comparison: `rrf w=0.20` over a 200-candidate pool. recall@10 is 25.0 / 26.7 /
 30.0 / 41.1 / 42.2% across the five thresholds, from 18.3 / 22.8 / 26.7 / 38.3 /
