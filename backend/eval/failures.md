@@ -1410,6 +1410,13 @@ silently demands a game running on Windows AND macOS AND Linux. Measured at 1 of
 12 no-OS queries in `compare_parsers` and 0 of 40 eval queries, so it is narrow
 but deterministic where it fires.
 
+**Later correction.** Building the parser eval, I disabled the guard to prove the
+harness would catch this - and the invention would not reproduce at all, 0 of 4
+on the same query that had given 3 of 3. So "3/3 deterministic" was true within
+one run and not across sessions, which is #33's own lesson applied to #33. The
+guard stays (the bug was real when measured, and it can only widen results), but
+the harness's ability to catch it is UNPROVEN rather than demonstrated.
+
 The first check for this missed it: I counted "invented scalars" over
 `max_price_usd`, `min_price_usd`, `released_after`, `multiplayer` and
 `max_required_age` - which came back 0 of 21 - and never looked at `platforms`,

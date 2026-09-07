@@ -4,6 +4,37 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-07 — Built the instrument that three changes had to go without
+
+**What broke.** Nothing, this time - the gap was in the measurement. Three parser
+changes in a row (#33, #34, #35) could not be judged by `run_eval`, because not
+one of its 118 queries names a price, a platform, a year, an age or a game. Every
+filter the parser extracts can only shrink the candidate set, so recall punishes
+extraction and can never reward it. The instrument always votes for doing less.
+
+**What I tried.** `eval/parse_cases.yaml` (47 labelled parses) and
+`eval/run_parse_eval.py`. It scores the two things recall cannot see: constraints
+MISSED, and constraints INVENTED - the second needs no labels, because any scalar
+field a case does not name is required to come back null. It also checks that a
+constraint which became a filter left `semantic_query` (the #34 rule), defaults
+to 3 reps with a `flaky` column (the #33 rule), and keeps `known_gap` cases in
+the file but out of the score.
+
+Then self-tested it, because a harness that passes everything on the first run
+might be measuring nothing: put each of today's bugs back by monkeypatch and
+check it goes red. It caught three - the all-optional schema (4 missed), the
+popularity leak (6 of 7 leaked), the unreachable one-word titles (6 missed, 3/4
+exclusions). The fourth, the invented all-three platforms, would not reproduce at
+all with the guard off, so that arm is unproven rather than passing. Recorded as
+a correction on #33.
+
+**What fixed it.** Baseline: 319/319 fields, 0 flaky over 3 reps, 4/4 exclusions,
+0 leaks, 3 known gaps still failing as documented. That is a regression guard
+rather than headroom - the parser passes everything currently labelled, which is
+the expected state after fixing four bugs in it today.
+
+---
+
 ## 2026-09-07 — A one-word title was unreachable, and the obvious fix was worse
 
 **What broke.** Went to fix the exclusion-phrase leak that #34 called "arguably

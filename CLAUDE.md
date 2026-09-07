@@ -44,7 +44,9 @@ Two categories, and I'll say which one we're in at the top of each session:
 ## Commands
 - `docker compose up -d db ollama` — start deps
 - `cd backend && uv run uvicorn app.main:app --reload`
-- `cd backend && uv run python -m eval.run_eval`
+- `cd backend && uv run python -m eval.run_eval` — recall, for RETRIEVAL changes
+- `cd backend && uv run python -m eval.run_parse_eval` — for PARSER changes.
+  Recall cannot referee those; see the Eval section.
 - `cd frontend && npm run dev`
 - Refreshing `data/games.json`: follow `backend/ingest/README.md`. In short —
   `alembic upgrade head`, `load_games --reload`, `embed_all`, then the two
@@ -476,6 +478,23 @@ understates quality because a correct-but-unlisted answer scores zero, and tail
 recall includes targets pure cosine cannot retrieve at all, left in
 deliberately. Compare a tier against itself across configs, and read `tail` plus
 the tail-cost counter-metric before believing any ranking number.
+
+`run_eval` CANNOT referee a parser change, and three in a row had to be justified
+without it (#33, #34, #35). Not one of its 118 queries names a price, a platform,
+a year, an age or a game, so every filter the parser extracts can only shrink the
+candidate set - recall punishes extraction and can never reward it. Proof it is
+blind rather than merely unkind: strip the tag arrays out of the schema entirely
+and `--parse` scores exactly the no-parse baseline. `eval/run_parse_eval.py`
+against `eval/parse_cases.yaml` is the instrument for that, scoring what recall
+cannot see - constraints MISSED, and constraints INVENTED (any scalar field a
+case does not name must come back null, so invention is caught with no extra
+labels). It also checks that a constraint which became a filter left
+`semantic_query`, which is the #34 rule. Use recall for retrieval changes and
+this for parser changes; a parser change that moves recall is usually the #33
+noise. It defaults to 3 reps and reports a `flaky` column, because a single pass
+would be as unreliable as the thing it measures. Cases marked `known_gap` are
+documented limitations kept in the file and out of the score - the same refusal
+to flatter as leaving unretrievable targets in `queries.yaml`.
 
 Recall is not comparable across query SETS either, only across configs on a
 fixed set. Expanding the eval from 74 to 118 invalidated every number measured

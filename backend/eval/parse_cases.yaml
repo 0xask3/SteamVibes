@@ -1,0 +1,295 @@
+# Labelled parses. What the parser must EXTRACT, and what it must not INVENT.
+#
+# This file exists because eval/queries.yaml cannot referee a parser change: not
+# one of its 118 queries names a price, a platform, a year, an age or a game, so
+# every filter the parser finds can only shrink the result set and recall can
+# only punish extraction. Three changes in a row (failures.md #33, #34, #35) had
+# to be justified without it. See the header of run_parse_eval.py.
+#
+# Do NOT move these into queries.yaml. Adding queries there invalidates every
+# recall number measured on the current set (#29), and these are not recall
+# questions - most name a game that will not be the "right" answer to anything.
+#
+# Format:
+#   query    the text handed to parse_query()
+#   expect   fields that MUST come out with these values. Anything not listed
+#            here is required to be null/empty, which is what catches invention
+#            - the all-three-platforms bug in #33 was found by hand and would
+#            have been caught here for free.
+#   allow    fields the parser MAY set either way, when the query is genuinely
+#            ambiguous. Use sparingly: every entry is a thing this file has
+#            stopped checking.
+#   tags     expected required_tags, scored LENIENTLY (overlap, not equality)
+#            and reported separately. The model picks different but defensible
+#            tags run to run, so scoring them strictly would make the headline
+#            number measure noise.
+#   excludes true when excluded_app_ids must be non-empty. The ids themselves
+#            are not labelled - they come from a franchise prefix scan and
+#            change with the corpus.
+#   known_gap  a documented limitation that is EXPECTED to fail. Reported on its
+#            own line and kept out of the score, so the headline is not
+#            flattered by leaving the hard cases out - the same reason
+#            queries.yaml keeps targets pure cosine cannot retrieve. If one
+#            starts passing, that is a real result and the marker comes off.
+
+# ---------------------------------------------------------------- price
+# max_price_usd is the FIRST field in the schema, so it is never "dropped off
+# the end" - it went missing because the schema made it optional (#33).
+- query: shooter under 30$
+  lang: en
+  expect: {max_price_usd: 30}
+  tags: [Shooter]
+
+- query: shooter under $30
+  lang: en
+  expect: {max_price_usd: 30}
+
+- query: shooter under 30 dollars
+  lang: en
+  expect: {max_price_usd: 30}
+
+# The one that started #33: price last, behind a platform and an exclusion.
+- query: game that feels like call of duty, but no wars on linux under 30$
+  lang: en
+  expect: {max_price_usd: 30, platforms: [linux], reference_game: Call of Duty}
+  allow: [excluded_tags, multiplayer]
+
+- query: shooter, no wars, on linux under 30$
+  lang: en
+  expect: {max_price_usd: 30, platforms: [linux]}
+  allow: [excluded_tags]
+
+- query: co-op base builder under 20 dollars that runs on linux
+  lang: en
+  expect: {max_price_usd: 20, platforms: [linux], multiplayer: true}
+  tags: [Co-op, Base-Building]
+
+- query: free multiplayer shooter released after 2020
+  lang: en
+  expect: {max_price_usd: 0, released_after: 2020, multiplayer: true}
+  tags: [Shooter]
+
+# "cheap" is not a number. A price here is an invention.
+- query: cheap relaxing puzzle games, nothing scary
+  lang: en
+  expect: {}
+  allow: [excluded_tags]
+  tags: [Puzzle, Relaxing]
+
+- query: günstige entspannte Spiele
+  lang: de
+  expect: {}
+  tags: [Relaxing]
+
+# ---------------------------------------------------------------- platform
+- query: puzzle game for mac
+  lang: en
+  expect: {platforms: [mac]}
+  tags: [Puzzle]
+
+- query: strategy games that run on linux
+  lang: en
+  expect: {platforms: [linux]}
+  tags: [Strategy]
+
+# Genuinely asks for all three; must NOT be stripped by _drop_invented_platforms.
+- query: a game that runs on windows, mac and linux
+  lang: en
+  expect: {platforms: [linux, mac, windows]}
+
+# ---------------------------------------------------------------- age / year
+- query: fun game for a 7 year old that isn't violent
+  lang: en
+  expect: {max_required_age: 7}
+  allow: [excluded_tags]
+
+- query: open world games released after 2018
+  lang: en
+  expect: {released_after: 2018}
+  tags: [Open World]
+
+# ---------------------------------------------------------------- player count
+- query: single player shooter
+  lang: en
+  expect: {multiplayer: false}
+  tags: [Singleplayer]
+
+- query: solo roguelike
+  lang: en
+  expect: {multiplayer: false}
+
+# The #32 query: four clauses, and `multiplayer` fell off before the code rule.
+- query: call of duty like game, but not including itself, also popular, single player
+  lang: en
+  expect:
+    multiplayer: false
+    min_reviews: 1000
+    reference_game: Call of Duty
+  excludes: true
+
+- query: gemütliches Aufbauspiel für zwei
+  lang: de
+  expect: {multiplayer: true}
+  tags: [Cozy, Base-Building]
+
+- query: rundenbasierte Strategie mit Koop-Modus
+  lang: de
+  expect: {multiplayer: true}
+  tags: [Turn-Based Strategy, Co-op]
+
+# Negation must not invert the filter into `false`.
+- query: shooter, not single player
+  lang: en
+  expect: {}
+  allow: [multiplayer]
+
+# Mood says nothing about player count - the prompt says so explicitly.
+- query: cozy farming game with fishing
+  lang: en
+  expect: {}
+  tags: [Cozy, Farming, Fishing]
+
+- query: entspanntes Spiel zum Abschalten
+  lang: de
+  expect: {}
+  tags: [Relaxing]
+
+# ---------------------------------------------------------------- popular
+# The word must become min_reviews AND leave semantic_query (#34).
+- query: popular co-op survival games
+  lang: en
+  expect: {min_reviews: 1000, multiplayer: true}
+  tags: [Survival]
+
+- query: a famous roguelike
+  lang: en
+  expect: {min_reviews: 1000}
+
+- query: well-known city builders
+  lang: en
+  expect: {min_reviews: 1000}
+
+# `beliebt` had no \w*, so the ordinary German inflection fired nothing (#34).
+- query: beliebte Aufbauspiele
+  lang: de
+  expect: {min_reviews: 1000}
+  tags: [Base-Building]
+
+- query: bekannte Rennspiele
+  lang: de
+  expect: {min_reviews: 1000}
+  tags: [Racing]
+
+# "beliebig" means arbitrary, not popular. Must not fire.
+- query: Spiele in beliebiger Reihenfolge
+  lang: de
+  expect: {}
+
+# ---------------------------------------------------------------- titles
+# One-word titles were unreachable until #35: _word_ngrams makes 2-5 word
+# windows only, so nothing prefixed `Hades`.
+- query: roguelikes similar to hades
+  lang: en
+  expect: {reference_game: Hades}
+
+- query: a game like stray
+  lang: en
+  expect: {reference_game: Stray}
+
+- query: building game like factorio
+  lang: en
+  expect: {reference_game: Factorio}
+
+- query: sandbox like terraria
+  lang: en
+  expect: {reference_game: Terraria}
+
+- query: racing games like forza
+  lang: en
+  expect: {reference_game: Forza}
+
+- query: extremely hard game like elden ring
+  lang: en
+  expect: {reference_game: ELDEN RING}
+
+- query: sehr schweres Spiel wie Dark Souls
+  lang: de
+  expect: {reference_game: DARK SOULS}
+
+# Reference plus exclusion, both directions of phrasing.
+- query: roguelikes similar to hades, except hades
+  lang: en
+  expect: {reference_game: Hades}
+  excludes: true
+
+- query: I like FPS shooters, suggest some excluding call of duty, which are also popular
+  lang: en
+  expect: {min_reviews: 1000, reference_game: Call of Duty}
+  excludes: true
+  tags: [FPS]
+
+- query: cozy farming games, not stardew valley
+  lang: en
+  expect: {reference_game: Stardew Valley}
+  excludes: true
+  tags: [Farming]
+
+# "like X" WITHOUT a negation must not exclude - X is the best match for itself.
+- query: something like dark souls but not fantasy
+  lang: en
+  expect: {reference_game: DARK SOULS}
+  allow: [excluded_tags]
+  tags: [Souls-like]
+
+# A bare noun after a cue must not be read as a title. "farming" is not a game.
+- query: games like farming and fishing
+  lang: en
+  expect: {}
+  allow: [reference_game]
+  tags: [Farming, Fishing]
+
+# ---------------------------------------------------------------- controls
+# Vague queries. Everything here must stay null; these are what catch invention.
+- query: atmospheric walking simulator
+  lang: en
+  expect: {}
+  tags: [Atmospheric]
+
+- query: game where the map changes every run
+  lang: en
+  expect: {}
+
+- query: a game about trains
+  lang: en
+  expect: {}
+
+- query: Spiel über einen kleinen Roboter
+  lang: de
+  expect: {}
+
+# ---------------------------------------------------------------- known gaps
+# Documented limitations. These FAIL on purpose and are excluded from the score.
+
+# Prefix match, not substring: the real name is "The Elder Scrolls V: Skyrim",
+# so no phrase from the query opens it. Wants trigram matching. failures.md
+# #21/#23.
+- query: open world rpg without skyrim
+  lang: en
+  expect: {reference_game: Skyrim}
+  known_gap: true
+
+# "at least 500 reviews" is not handled, and deliberately: `popular` is a code
+# regex because the prompt is full, and a regex does not read numbers.
+# CLAUDE.md says so in the _POPULAR comment.
+- query: strategy games with at least 500 reviews
+  lang: en
+  expect: {min_reviews: 500}
+  known_gap: true
+
+# The popularity strip cannot tell a constraint from content, so this loses
+# "famous" from the vibe text AND applies a review floor nobody asked for.
+# Named as a limitation in failures.md #34.
+- query: play as a famous detective solving murders
+  lang: en
+  expect: {}
+  known_gap: true
