@@ -22,12 +22,21 @@ You need **Docker**, **[uv](https://docs.astral.sh/uv/)**, **Node 22+**, and
 in Compose, because embedding 130,651 games without GPU access takes hours
 instead of 22 minutes. Python itself is uv's problem; it fetches 3.14.
 
+**Linux or Windows, x86_64 or aarch64.** `pyproject.toml` binds torch to
+PyTorch's CUDA index (see the trap at the end of this section), and that index
+publishes no macOS wheels — so on a Mac `uv sync` fails to resolve torch and the
+backend will not install at all, even though the app itself would run fine
+without it at `RANK_METHOD=rrf`. Moving torch and sentence-transformers into an
+optional dependency group would fix that; it is not done because it would make
+the default `run_eval` refuse to report until you installed the extra, and the
+numbers below are the point of the project.
+
 ### 1. Get the data
 
 The corpus is the **[Steam Games Dataset](https://www.kaggle.com/datasets/fronkongames/steam-games-dataset)**
 by Martin Bustos (fronkongames) on Kaggle — 138,964 games with descriptions,
-tags, genres, prices, platforms and review counts, already scraped. Download it
-and put the JSON here:
+tags, genres, prices, platforms and review counts, already scraped. Downloading
+needs a free Kaggle account. Put the JSON here:
 
 ```bash
 mkdir -p data
@@ -80,8 +89,12 @@ otherwise unchanged:
 ```bash
 docker compose stop backend frontend
 cd backend && uv run uvicorn app.main:app --reload
-cd frontend && npm run dev
+cd frontend && npm install && npm run dev
 ```
+
+`npm install` is needed the first time: `node_modules` is gitignored, and the
+containerised UI installs inside its own image, so a fresh clone has nothing to
+run. `uv run` needs no equivalent — it syncs from `uv.lock` on first use.
 
 Then open **`http://localhost:5173`**, not `127.0.0.1:5173` — Vite's dev server
 binds IPv6 `::1` only and the numeric address refuses the connection. (The

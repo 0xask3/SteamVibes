@@ -40,9 +40,14 @@ line-length = 88
 # `explicit = true` means only the packages named in [tool.uv.sources] use this
 # index, so everything else still resolves from PyPI.
 #
-# cu130 matches the host driver (CUDA UMD 13.4). The version ceiling is real:
-# this index carries torch 2.9.1 for cp314, while PyPI is already on 2.14 - so
-# an unpinned `torch>=2.14` silently falls back to PyPI and the CPU build.
+# cu130 matches the host driver (CUDA UMD 13.4). The index has since caught up
+# to PyPI - uv.lock now pins torch 2.14.0+cu130 for cp314, where this comment
+# once recorded a 2.9.1 ceiling - but the binding is what keeps it honest: drop
+# `[tool.uv.sources]` and resolution goes back to PyPI's CPU-only build.
+#
+# It also publishes NO macOS wheels, only manylinux and win_amd64, so `uv sync`
+# cannot resolve on a Mac. That is the whole platform constraint in README's
+# quickstart, and it comes from this block.
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
