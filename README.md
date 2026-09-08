@@ -7,19 +7,40 @@ what survives.
 
 > "co-op survival crafting with base building under 20 dollars on linux"
 >
-> parsed into `max_price_usd: 20.0`, `platforms: [linux]`, `multiplayer: true`,
-> leaving `semantic_query: "co-op survival crafting with base building"` for the
-> vectors — 130,651 games narrowed to 1,867 by SQL, then Terraria, Volcanoids
-> and Solace Crafting, in 68ms of query time.
-
-<!-- TODO: record a GIF of the chip-editing interaction and drop it here. -->
+> parsed into `max_price_usd: 20.0`, `platforms: [linux]`, `multiplayer: true`
+> and `required_tags: [Co-op, Survival, Crafting, Base-Building]`, leaving
+> `semantic_query: "co-op survival crafting with base building"` for the vectors
+> — 130,651 games narrowed to 768 by SQL, ranked by pgvector in 36ms, then
+> reordered by a cross-encoder into Valheim, Terraria and Rising World.
 
 Everything runs locally. No API keys, no hosted inference.
 
 ## Quickstart
 
-Ollama runs **natively on the host** rather than in Compose, because embedding
-130,651 games without GPU access takes hours instead of 22 minutes.
+You need **Docker**, **[uv](https://docs.astral.sh/uv/)**, **Node 22+**, and
+**[Ollama](https://ollama.com/download) installed natively on the host** — not
+in Compose, because embedding 130,651 games without GPU access takes hours
+instead of 22 minutes. Python itself is uv's problem; it fetches 3.14.
+
+### 1. Get the data
+
+The corpus is the **[Steam Games Dataset](https://www.kaggle.com/datasets/fronkongames/steam-games-dataset)**
+by Martin Bustos (fronkongames) on Kaggle — 138,964 games with descriptions,
+tags, genres, prices, platforms and review counts, already scraped. Download it
+and put the JSON here:
+
+```bash
+mkdir -p data
+mv ~/Downloads/games.json data/games.json      # ~885MB, gitignored
+```
+
+**Take `games.json`, not `games.csv`.** The CSV is missing 13,109 games, has a
+39-versus-40 column header offset that shifts every field from index 8 onward,
+drops the tag vote counts that `embed_text` ranks by, and has no
+`short_description` column at all. The loader reads only the JSON, and the path
+is hardcoded to `data/games.json`.
+
+### 2. Bring the stack up
 
 ```bash
 ollama pull snowflake-arctic-embed2 && ollama pull qwen3.5:9b
@@ -32,8 +53,10 @@ and the UI on <http://127.0.0.1:5173>. The database is **empty** at this point:
 Compose cannot fill it, because ingest needs both the host GPU and
 `data/games.json`, which is outside the backend build context on purpose.
 
-So the last step runs on the host, and it is the slow one — about 25 minutes on
-an RTX 4080 SUPER:
+### 3. Load and embed
+
+This runs on the host, and it is the slow step — about 25 minutes on an RTX
+4080 SUPER:
 
 ```bash
 cd backend
@@ -41,16 +64,29 @@ uv run python -m ingest.load_games        # ~3 min   -> 138,964 games
 uv run python -m ingest.embed_all         # ~22 min  -> 130,651 vectors
 ```
 
-Both are idempotent and resumable; interrupt either and re-run it.
+Both are idempotent and resumable; interrupt either and re-run it. To watch the
+embed job from another terminal, `./backend/ingest/watch_embed.sh` polls the
+database rather than the job's own output, which is buffered and invisible when
+the run is backgrounded.
 
-Prefer running the app from source instead? Stop the two app containers so they
-release the ports, and the native workflow is unchanged:
+That is the whole setup. Search should now return results at
+<http://127.0.0.1:5173>.
+
+### Running from source instead
+
+Stop the two app containers so they release the ports; the native workflow is
+otherwise unchanged:
 
 ```bash
 docker compose stop backend frontend
 cd backend && uv run uvicorn app.main:app --reload
 cd frontend && npm run dev
 ```
+
+Then open **`http://localhost:5173`**, not `127.0.0.1:5173` — Vite's dev server
+binds IPv6 `::1` only and the numeric address refuses the connection. (The
+containerised UI in step 2 is the opposite: nginx publishes the port normally,
+so either spelling works. Both are in the API's CORS allowlist.)
 
 Or skip the UI entirely:
 
@@ -85,7 +121,7 @@ complaining, and `torch.cuda.is_available()` simply returns `False`.
                     multiplayer, ..., semantic_query }
                      |
         SQL filters  |  price / platform / tags / year / age / multiplayer
-                     v  130,651 rows -> 1,867
+                     v  130,651 rows -> 622
             stage 1  |  HNSW index, ORDER BY embedding <=> query, LIMIT 200
                      |  ef_search 200, iterative_scan strict_order
                      v

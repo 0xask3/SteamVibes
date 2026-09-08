@@ -4,8 +4,8 @@
     uv run python search.py "co-op base builder under 20 dollars on linux" --parse
     uv run python search.py "something for a kid" --max-age 7 --exclude-tag Violent
 
-Presentation only. The ranking lives in app/search.py, so the API in the next
-step serves identical logic rather than a second copy.
+Presentation only. The ranking lives in app/search.py, so this and the API
+serve identical logic rather than two copies of it.
 
 --parse asks the chat model to fill the ParsedQuery; the flags fill the same
 object by hand and override anything it decided. Keeping the unparsed path is

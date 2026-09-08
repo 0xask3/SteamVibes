@@ -39,10 +39,7 @@ export default function App() {
    * this the user just watches a spinner and reasonably concludes it broke.
    */
   useEffect(() => {
-    if (!loading) {
-      setSlow(false);
-      return;
-    }
+    if (!loading) return;
     const timer = setTimeout(() => setSlow(true), 2500);
     return () => clearTimeout(timer);
   }, [loading]);
@@ -55,6 +52,12 @@ export default function App() {
   async function runSearch(text: string, parsed?: ParsedQuery) {
     if (!text.trim()) return;
     setLoading(true);
+    // Reset here rather than in the effect below. Clearing it there is a
+    // setState called synchronously during an effect, which schedules a second
+    // render for something the event already knows - oxlint flags it, and the
+    // event that starts a search is the honest place to clear a "this is
+    // taking a while" flag.
+    setSlow(false);
     setError(null);
     try {
       const result = await search({ query: text, parsed });

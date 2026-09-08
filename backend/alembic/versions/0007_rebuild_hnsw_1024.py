@@ -17,9 +17,12 @@ Do not run this between model comparisons. The eval wants an exact scan - it is
 ground truth rather than an approximation, and it removes index recall as a
 variable - and building this three times costs far more than the queries save.
 
-Bigger than its 768-dim predecessor: ~680MB over 130,651 vectors, up from
-~510MB. Still needs shm_size: 4gb on the db service or the parallel build fails
-with "No space left on device" - see NOTES.md 2026-08-26.
+Bigger than its 768-dim predecessor, and by more than the ratio suggests: this
+docstring predicted ~680MB (510MB scaled by 1024/768) and the build came out at
+1020MB - size is a step function of dimension, not a ratio, because at 1024 dims
+an element is ~4.4KB and only one fits an 8KB page. See NOTES.md 2026-09-04.
+Still needs shm_size: 4gb on the db service or the parallel build fails with
+"No space left on device" - see NOTES.md 2026-08-26.
 
 Revision ID: 0007
 Revises: 0006

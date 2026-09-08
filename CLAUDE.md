@@ -65,6 +65,8 @@ Two categories, and I'll say which one we're in at the top of each session:
 - `cd backend && uv run python -m eval.compare_runs a.json b.json` - paired
   comparison of two `run_eval --dump` files, for config-vs-config changes.
 - `cd frontend && npm run dev`
+- `cd frontend && npx tsc --noEmit && npm run lint` - typecheck and oxlint.
+  Both are clean; oxlint is easy to forget because nothing in CI runs it.
 - Refreshing `data/games.json`: follow `backend/ingest/README.md`. In short —
   `alembic upgrade head`, `load_games --reload`, `embed_all`, then the two
   SQL checks. `--reload` is required or existing games are skipped.
@@ -79,7 +81,7 @@ Two categories, and I'll say which one we're in at the top of each session:
   indie games, 100% of which have tags and a description.
 - Embed every game that has a short_description or tags — 130,651 of
   138,964. The 8,313 with neither are Playtest/Closed Beta entries, not
-  games. Embedding is cheap (~12 min), so scope is generous and the
+  games. Embedding is cheap (~22 min on arctic), so scope is generous and the
   quality gate lives at query time, not ingest time.
 - Search filters price on `list_price_usd`, never `price_usd`. The Kaggle
   snapshot caught a Steam sale — 37.7% of paid games are discounted, so
@@ -196,7 +198,7 @@ Two categories, and I'll say which one we're in at the top of each session:
   `app/search.py` - that is a search-path edit and belongs in plan mode.
 - `verify_corpus_complete()` is its sibling and catches what it cannot: the
   RIGHT model applied to only part of the table. During a `--reload` the model
-  column agrees with `EMBED_MODEL` for the whole ~25 minutes while search runs
+  column agrees with `EMBED_MODEL` for the whole ~22 minutes while search runs
   against whatever fraction exists - fewer and worse results, no error. Only
   `run_eval` calls it, on purpose: a partial corpus is a normal thing to search
   from while ingest runs and the CLI should stay usable, but a recall number
@@ -593,8 +595,7 @@ Two categories, and I'll say which one we're in at the top of each session:
   no constraints. It is deliberately NOT a new `ParsedQuery` field - the frontend
   posts that object straight back on a chip edit, so the flag would then describe
   a request in which no parse happened, and every field added there has to be
-  checked against `_REQUIRED_FIELDS`, `_llm_schema()`, `has_filters()` and
-  `describe()` (#33). `parse_call_failed` and `parse_bad_output` are split
+  checked against `_REQUIRED_FIELDS`, `_llm_schema()` and `describe()` (#33). `parse_call_failed` and `parse_bad_output` are split
   because one is Ollama being unreachable and the other is the model answering
   unusably - same product outcome, entirely different fix.
 - THE PARSER COSTS MORE THAN THE CROSS-ENCODER, which nothing in this file
@@ -734,7 +735,7 @@ Unknown tags are reported rather than silently returning nothing.
 then spends ~18s reloading it to do ~20ms of work. See NOTES.md 2026-08-29.
 
 Environment: Python 3.14.7 via uv; Ollama native on the host serving
-`qwen3-embedding:0.6b` at ~82 embeddings/sec at batch 128; Postgres 16.15 +
+`snowflake-arctic-embed2` at ~98 embeddings/sec at batch 128; Postgres 16.15 +
 pgvector 0.8.6 in Docker (`docker compose up -d db`). Rate is per model and
 varies 2x — see the table in `ingest/embed_all.py`, and read it off a finished
 run, never a sample.
@@ -756,8 +757,8 @@ Loaded: all four tables populated in 2.9 min — 138,964 games, 1,180,522 tags,
 idempotent (re-run skips) and `--reload` upserts without duplicating. Source
 has 1,320 duplicate category entries, deduped at load.
 
-Embedded: all 130,651 rows carry a `qwen3-embedding:0.6b` vector at 1024 dims,
-at ~82/sec. Migration `0003` built the HNSW index (`vector_cosine_ops`, m=16,
+Embedded: all 130,651 rows carry a `snowflake-arctic-embed2` vector at 1024
+dims, at 97.7/sec (22:16 over the corpus - see the table in ingest/embed_all.py). Migration `0003` built the HNSW index (`vector_cosine_ops`, m=16,
 ef_construction=64) after embedding; `0006` widened the column and dropped the
 index, `0007` rebuilds it at 1024. Verified by query plan: `Index Scan using
 ix_games_embedding_hnsw`, 3.4ms for a top-10 over 130,651 vectors. The db

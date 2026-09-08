@@ -93,7 +93,7 @@ def check_hnsw_absent() -> None:
     CLAUDE.md states the rule and 0004/0006 both follow it, but the cost of
     forgetting is silent: the job still works, it just takes many minutes
     instead of seconds, because every row written needs a new entry in a
-    ~510MB graph. Cheaper to check than to notice.
+    ~1020MB graph. Cheaper to check than to notice.
     """
     with session_scope() as session:
         present = session.scalar(

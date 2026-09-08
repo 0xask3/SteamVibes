@@ -39,16 +39,24 @@ doesn't exist yet.
 ## 4. Drop the HNSW index, then reload
 
 ```bash
-uv run alembic downgrade 0004     # drops ix_games_embedding_hnsw
+uv run alembic downgrade 0006     # drops ix_games_embedding_hnsw
 uv run python -m ingest.load_games --reload
 ```
 
-**Drop the index first.** It is 510MB over 130,651 vectors, and a `--reload`
-updates every one of the 138,964 rows. Each update needs a new entry in every
-index on the table, and HNSW insertion is deliberately expensive — the same
-reason it is built after the embed job rather than before. With the index in
-place a reload runs for many minutes; without it, about three. Step 6 rebuilds
-it.
+**`0006`, not `0004`.** This said `0004` until 2026-09-08 and that command
+**destroys every embedding in the table**: going below `0006` runs its
+downgrade, which re-dimensions the column back to 768 with
+`USING NULL::vector(768)` and discards all 130,651 vectors, forcing a full
+~22-minute re-embed. `downgrade 0006` runs only `0007`'s downgrade, which drops
+the index and leaves the column and its vectors alone. Check what the
+intervening revisions do before naming a target.
+
+**Drop the index first.** It is 1020MB over 130,651 vectors at 1024 dimensions,
+and a `--reload` updates every one of the 138,964 rows. Each update needs a new
+entry in every index on the table, and HNSW insertion is deliberately expensive
+— the same reason it is built after the embed job rather than before. With the
+index in place a reload runs for many minutes; without it, about three. Step 6
+rebuilds it.
 
 **`--reload` is required.** Without it the loader skips every app_id already
 present and only picks up genuinely new games — so changed prices, review
@@ -91,8 +99,21 @@ uv run alembic upgrade head
 ```
 
 The embed job only touches rows where `embedding IS NULL`, so it costs
-proportional to what actually changed, not the full 12 minutes. Interruptible
+proportional to what actually changed, not the full ~22 minutes. Interruptible
 — re-run to continue.
+
+To watch it from another terminal:
+
+```bash
+./backend/ingest/watch_embed.sh        # poll every 2s
+```
+
+It polls the database rather than reading the job's output, because tqdm writes
+to stderr and that is buffered and invisible when the run is backgrounded or
+piped. It also shows a live `** MIXED MODELS **` warning — the one failure
+`check_model_consistency()` exists to prevent — and prints a verification
+summary when the count reaches the total. Ctrl-C stops the watcher and never
+touches the embed job.
 
 ## 7. Verify
 

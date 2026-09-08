@@ -63,25 +63,8 @@ class ParsedQuery(BaseModel):
     # The part that gets embedded. Everything else is a WHERE clause.
     semantic_query: str
 
-    def has_filters(self) -> bool:
-        """True when anything beyond the semantic query is set."""
-        return any(
-            (
-                self.max_price_usd is not None,
-                self.min_price_usd is not None,
-                self.required_tags,
-                self.excluded_tags,
-                self.platforms,
-                self.released_after is not None,
-                self.multiplayer is not None,
-                self.max_required_age is not None,
-                self.min_reviews is not None,
-                self.excluded_app_ids,
-            )
-        )
-
     def describe(self) -> list[str]:
-        """Human-readable filter list, for the CLI and later the UI chips."""
+        """Human-readable filter list, for the CLI and the UI chips."""
         parts: list[str] = []
         if self.min_price_usd is not None:
             parts.append(f">= ${self.min_price_usd:g}")
@@ -160,7 +143,7 @@ class SearchResponse(BaseModel):
     # Tags that matched nothing in the real vocabulary. Reported rather than
     # silently yielding zero rows - `Base Building` vs `Base-Building` returns
     # nothing with no error, which is the failure the parser's fuzzy matching
-    # will exist to prevent.
+    # exists to prevent.
     unknown_tags: list[str] = Field(default_factory=list)
 
     requested: int

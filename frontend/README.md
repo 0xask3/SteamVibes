@@ -1,32 +1,63 @@
-# React + TypeScript + Vite
+# Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19 + TypeScript + Vite. One page: a search box, editable filter chips, a
+result list, and a collapsed diagnostics panel.
 
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev          # http://localhost:5173
+npm run build        # tsc -b && vite build
+npx tsc --noEmit     # typecheck alone
+npm run lint         # oxlint - clean, and nothing in CI runs it
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Open **`http://localhost:5173`**, not `127.0.0.1:5173`. Vite's dev server binds
+IPv6 `::1` only, so the numeric address refuses the connection. The API is the
+opposite — `src/api.ts` calls `127.0.0.1:8000`, because on Windows `localhost`
+resolves to `::1` first and costs ~2.1s per new connection. Both spellings are
+in the backend's CORS allowlist for exactly this reason.
+
+It needs the backend on `:8000`. With nothing there the page renders and every
+search reports a failed fetch.
+
+## The four things worth knowing
+
+**`VITE_API_URL` is baked in at build time**, not read at runtime — Vite inlines
+`import.meta.env`. The Dockerfile takes it as a build ARG. The default is
+`http://127.0.0.1:8000`, which is right for both `npm run dev` and the container,
+because the browser runs on the host either way.
+
+**Editing a chip does not re-parse.** `chips.ts` turns a `ParsedQuery` into
+removable chips; removing one posts the modified `ParsedQuery` straight back as
+`SearchRequest.parsed`, and the backend then skips the chat model entirely.
+Measured 0.095s against 1.347s. Re-parsing would also re-derive the chip the
+user just deleted.
+
+**Explanations are a second request.** Results render first, then `/api/explain`
+fills in a "why this matches" line per card. `explain()` in `api.ts` never
+throws: the list is correct and useful without them. A line the backend could
+not verify against the game's real tags arrives with `grounded: false`, and
+`ResultCard.tsx` renders it differently and says so on hover — a canned sentence
+presented as a real explanation is the exact failure the verification exists to
+prevent.
+
+**Relaxed filters are shown above the results, not below.** When the backend
+widens a filter to fill the page, `response.parsed` holds what was *actually*
+applied and `response.relaxed` is the diff. Silently widening a constraint the
+user typed is worse than returning a short page.
+
+## Files
+
+| | |
+| --- | --- |
+| `App.tsx` | state, search + explain + stats orchestration, chip rendering |
+| `ResultCard.tsx` | one game, including the grounded/fallback explanation |
+| `StatsPanel.tsx` | collapsed `/api/stats` panel; withholds p95 below 21 samples |
+| `chips.ts` | `ParsedQuery` → removable chips |
+| `api.ts` | the three fetches; `explain` and `stats` swallow their own errors |
+| `types.ts` | hand-mirrored from `backend/app/schemas.py` |
+
+`types.ts` is written by hand rather than generated. There are four shapes and a
+codegen step would be more machinery than it saves — but it does mean a schema
+change in the backend needs the same edit here, and `tsc` will not catch it
+because nothing validates the response at runtime.

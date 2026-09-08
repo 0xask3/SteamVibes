@@ -33,7 +33,6 @@ from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
-from app.config import settings
 from app.db import session_scope
 from app.llm import chat_json
 from app.models import Game
@@ -311,7 +310,3 @@ def explain(
 
     return out, (time.perf_counter() - started) * 1000
 
-
-def explain_model() -> str:
-    """Which model wrote these. For the eval's self-labelling line."""
-    return settings.chat_model

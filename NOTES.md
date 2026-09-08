@@ -4,6 +4,36 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-08 - The refresh guide told you to delete every embedding
+
+**What broke.** Nothing yet, which is the point - this was found by a cleanup
+pass, not by running it. `ingest/README.md` step 4 said to drop the HNSW index
+before a `--reload` with:
+
+    uv run alembic downgrade 0004     # drops ix_games_embedding_hnsw
+
+That comment is true and the command is a disaster. Downgrading to 0004 runs
+0006's downgrade on the way, which re-dimensions games.embedding back to 768
+with `USING NULL::vector(768)` - discarding all 130,651 vectors and forcing a
+full ~22-minute re-embed. The instruction sat in the routine-maintenance guide,
+under a heading about a performance optimisation.
+
+**What I tried.** Read the chain rather than the target: 0003 builds HNSW, 0004
+adds required_age and tags, 0005 rebuilds HNSW, 0006 re-dimensions to 1024,
+0007 rebuilds HNSW at 1024. The revision that drops the CURRENT index is 0007,
+so the correct target is `downgrade 0006`. CLAUDE.md already said 0006; the
+ingest guide had drifted and nothing cross-checked them.
+
+**What fixed it.** `downgrade 0006`, plus a paragraph in the guide saying what
+0004 would have done and why, so the next person editing it knows the number is
+load-bearing. The general lesson: an alembic downgrade target names where you
+STOP, not what you undo, so every revision between here and there runs. Name the
+revision immediately below the one you want reverted, and check what the ones in
+between do to data - a migration that is purely additive on the way up can be
+destructive on the way down.
+
+---
+
 ## 2026-09-08 - The bigger German set answered the question, and the answer was no
 
 **What broke.** Nothing. This closed the one deferred claim in the repo: the
