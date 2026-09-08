@@ -4,6 +4,52 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-08 - The bigger German set answered the question, and the answer was no
+
+**What broke.** Nothing. This closed the one deferred claim in the repo: the
+cross-encoder appeared to move German `specific` recall off a 55.6% that two
+embedding models had left identical, and CLAUDE.md recorded it as failing a
+paired test at n=9 - "a reason to BUILD A BIGGER GERMAN SET and nothing more".
+
+**What I tried.** Built the set as `eval/queries_de.yaml`: the SAME 118 targets
+and tiers as queries.yaml, asked in German, generated from the source file so
+the 148 app_ids were copied rather than retyped. `specific` German went from 9
+queries to 44. Then re-ran the comparison paired, with a sign test and a
+bootstrap that now live in `eval/paired.py` instead of a scratch script.
+
+**What fixed it.** Nothing to fix - the claim is retired rather than deferred.
+Reranking on German is +3.8% [-3.0%, +11.0%], 13 wins to 7, p=0.263, and
+`specific` German is +9.1% [-2.3%, +20.5%], p=0.289. At n=44 instead of n=9 that
+is now an informative negative rather than an underpowered one: the reranker's
+benefit is established in aggregate (+8.3% [+2.5%, +14.5%]) and is not
+established for German. The same set also produced the first EN/DE number that
+is not confounded by tier mix or target choice - -16.1% [-25.8%, -6.8%], 20
+losses to 4 wins, p=0.002, almost all of it in `specific`.
+
+---
+
+## 2026-09-08 - The recorded p-value was one-sided and nothing said so
+
+**What broke.** Putting the sign test into `eval/paired.py` meant checking it
+against a known result, and CLAUDE.md's only recorded one was Qwen3 against bge:
+"11 wins to 5, p=0.105". My implementation returned 0.2101 for that exact split.
+
+**What I tried.** Worked the binomial out by hand. For 11 of 16, the upper tail
+is 6885/65536 = 0.1051 and twice that is 0.2101. So both numbers are correct and
+they are the SAME data under different conventions - the recorded figure was
+one-sided and nothing in the repo said so.
+
+**What fixed it.** Kept two-sided, which is the right default because "are these
+two models different" is not a directional hypothesis and choosing the direction
+after seeing which arm won is what makes a one-sided test flattering. Then
+labelled it everywhere it could be confused: in `paired.py`'s self-test, which
+asserts the 0.2101 and prints both, and in CLAUDE.md beside the recorded 0.105.
+No published claim changes - the split was not significant under either
+convention - but a future two-sided p compared against that 0.105 would have
+looked like a result appearing out of nowhere.
+
+---
+
 ## 2026-09-08 - Thirty searches at once take 209 seconds each
 
 **What broke.** A concurrency check on the metrics recorder - 30 parallel

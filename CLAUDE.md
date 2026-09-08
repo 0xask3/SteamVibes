@@ -54,6 +54,16 @@ Two categories, and I'll say which one we're in at the top of each session:
   hallucination rate. `--self-test` FIRST, and after any verifier change: it
   feeds four known-bad responses plus a truthful control, and a checker that has
   never gone red is not known to work.
+- `cd backend && uv run python -m eval.run_eval --queries eval/queries_de.yaml`
+  - the same 118 targets asked in German. A DIFFERENT SET is a different
+  measurement, never a variant of the default one.
+- `cd backend && uv run python -m eval.run_lang_eval` - EN vs DE on 91 matched
+  pairs, with a sign test and a paired bootstrap. The only EN/DE number here
+  that is not confounded by tier mix or target choice.
+- `cd backend && uv run python -m eval.paired` - self-test the significance
+  tests. Run it before believing any comparison; it is two-sided.
+- `cd backend && uv run python -m eval.compare_runs a.json b.json` - paired
+  comparison of two `run_eval --dump` files, for config-vs-config changes.
 - `cd frontend && npm run dev`
 - Refreshing `data/games.json`: follow `backend/ingest/README.md`. In short —
   `alembic upgrade head`, `load_games --reload`, `embed_all`, then the two
@@ -399,10 +409,12 @@ Two categories, and I'll say which one we're in at the top of each session:
   wrong headlines in one session. The floors below measure re-running the SAME
   config; the uncertainty in a DIFFERENCE between two configs is far larger. At
   n=118 with ~100 tied queries a 2.7-point gap has a 95% CI of [-2.1%, +7.6%],
-  and 11 wins to 5 is p=0.105. Run a paired bootstrap over queries and a sign
-  test BEFORE writing a comparison table. `eval/` has no harness for this yet -
-  it was done in a scratch script - so build one if a fourth model is compared.
-  See failures.md #37.
+  and 11 wins to 5 is p=0.105 ONE-SIDED, which is 0.210 two-sided - see the
+  `eval/paired.py` note below before comparing that figure to anything. Run a
+  paired bootstrap over queries and a sign test BEFORE writing a comparison
+  table. The harness now exists: `eval/paired.py`, with `run_eval --dump` and
+  `eval/compare_runs.py` for config-vs-config and `eval/run_lang_eval.py` for
+  EN-vs-DE. See failures.md #37.
 - Differences below ~2.5 points at n=44, or ~1 point at n=118, are NOT results.
   That is this eval's reproducibility floor, measured rather than guessed: two
   embeds of the same model on the same corpus move `tail` by 2.3 points, one
@@ -612,6 +624,57 @@ Two categories, and I'll say which one we're in at the top of each session:
   (no request blocks the event loop) and do nothing about GPU contention; the
   fix would be a bounded queue that sheds load, and there isn't one. Do not
   benchmark this API concurrently and read the result as latency.
+- THE GERMAN GAP IS REAL AND IT IS 16 POINTS, measured paired for the first time.
+  `eval/queries_de.yaml` holds the SAME 118 targets and tiers as queries.yaml,
+  asked in German, so `run_lang_eval` compares 91 matched pairs where language is
+  the ONLY variable - not tier mix, not target choice, both of which confounded
+  every earlier EN/DE number. English 73.8% against German 57.7%, difference
+  -16.1% [-25.8%, -6.8%], 20 losses to 4 wins, p=0.002. It is concentrated in
+  `specific` (-25.7%, p=0.012) and is NOT distinguishable in `core` (-8.3%,
+  p=0.375) or `tail` (-11.1%, p=0.289), so the overall figure is the result and
+  the per-tier attribution holds only for `specific`. 67 of 91 queries tie, so
+  the whole thing rests on 24.
+- A SECOND QUERY SET GOES IN A SECOND FILE, never into queries.yaml. Recall is
+  comparable across configs on a FIXED set and never across sets - going from 74
+  to 118 queries once invalidated every number measured on the old one. Adding
+  the German queries to queries.yaml would have killed every figure in README.md
+  and this file. `run_eval --queries` selects the set and prints its name on the
+  self-labelling line, because queries_de.yaml has the same size, tiers and
+  targets and nothing else on screen would tell the two apart.
+- Holding the TARGETS fixed is what makes a language comparison mean anything.
+  The old EN/DE rows were never a language measurement - German was 37% `core`
+  against English's 22%, so part of the gap was tier mix - and the per-tier
+  matrix fixed that while leaving target choice, because the German queries
+  pointed at different games. Same targets, same tiers, same expect: one
+  variable. Same controlled-contrast logic as `specific` and `tail` being mirror
+  samplers that differ only in review band.
+- `eval/queries_de.yaml` is GENERATED, not hand-written, and app_ids are copied
+  rather than retyped. queries.yaml's own header says a typo would look exactly
+  like a recall failure; 148 expect entries transcribed by hand would produce
+  one. `run_lang_eval` asserts row-for-row that `expect` and `tier` still agree
+  between the files, because if they ever drift the comparison silently becomes
+  two different questions.
+- The German set measures the PENALTY FOR ASKING IN GERMAN, not how Germans
+  search. These are German renderings of a fixed set of requests, so wording
+  variance is controlled and naturalness is not. Genre loanwords stay English
+  (Roguelike, Metroidvania, Souls-like, Deckbuilder) because that is how German
+  gaming discourse writes them and translating them would measure a vocabulary
+  nobody uses. Say which of the two questions a number answers before quoting it.
+- `eval/paired.py` is the sign test and the paired bootstrap, and it is now the
+  gate on every comparison claim. IT IS TWO-SIDED. CLAUDE.md's recorded
+  Qwen3-vs-bge `p=0.105` is the ONE-SIDED tail of the same 11-5 split, which is
+  0.2101 two-sided - the two numbers describe identical data under different
+  conventions and must never be compared to each other. Two-sided is the default
+  because "are these different" is not a directional hypothesis, and choosing the
+  direction after seeing which arm won is what makes a one-sided test flattering.
+  `uv run python -m eval.paired` self-tests both functions against hand-worked
+  values, including that 11-5 split and a one-win-over-sixty-ties case that must
+  come back p=1.0.
+- `run_eval --dump` writes per-query scores and `eval/compare_runs.py` pairs two
+  dumps. It REFUSES two dumps from different query sets, and refuses dumps whose
+  rows do not line up - a paired test on misaligned rows silently throws away the
+  ties that give it its power. The config travels inside the dump, so a file
+  found a week later still says which model, set and rank method produced it.
 - Commit per feature, not per session.
 - When something breaks, three lines in `NOTES.md`: what broke, what I
   tried, what fixed it.
@@ -743,6 +806,16 @@ recall includes targets pure cosine cannot retrieve at all, left in
 deliberately. Compare a tier against itself across configs, and read `tail` plus
 the tail-cost counter-metric before believing any ranking number.
 
+`eval/queries_de.yaml` is a SECOND set, not an extension of the first: the same
+118 targets and tiers asked in German, generated from queries.yaml so the
+app_ids are copied rather than retyped. It exists because queries.yaml is frozen
+(adding to it would invalidate every published number) and because a language
+comparison needs the targets held fixed to mean anything. `run_eval --queries`
+selects it, `run_lang_eval` runs the 91 matched pairs against English with a
+sign test and a paired bootstrap. German recall on it is 56.4% overall
+(core 21.7 / specific 68.2 / tail 68.2) at the shipped rerank config, and 52.5%
+at `rrf w=0.20`.
+
 `run_eval` CANNOT referee a parser change, and three in a row had to be justified
 without it (#33, #34, #35). Not one of its 118 queries names a price, a platform,
 a year, an age or a game, so every filter the parser extracts can only shrink the
@@ -816,13 +889,17 @@ extra 30-minute round trip back to the winner.)
 German is NOT an EMBEDDING model problem. Arctic's `specific` gain is entirely
 English - 65.7 -> 85.7 while German sits at 55.6% for both models - so swapping
 to the multilingual embedding model bought 20 English points and zero German
-ones. It may however be a RERANKER problem, which is new and unexpected:
-Qwen3-Reranker moves `specific` DE off that stuck 55.6% to 77.8% and collapses
-the tier's EN/DE gap from 30.2 to 13.7. Do not spend that number - `specific` DE
-is n=9, so it is a two-query swing and this file's floor is ~2.5 points at n=44.
-The German gain does NOT survive a paired test - 5 wins to 2, p=0.227 - so it is
-a reason to BUILD A BIGGER GERMAN SET and nothing more. Do not quote it as a
-result. failures.md #37.
+ones. It is NOT a reranker problem either, and that claim is now RETIRED rather
+than deferred. The hypothesis was that Qwen3-Reranker moves `specific` DE off
+that stuck 55.6% to 77.8%; this file said it did not survive a paired test at
+n=9 and was "a reason to BUILD A BIGGER GERMAN SET and nothing more". The bigger
+set exists now - `eval/queries_de.yaml`, the same 118 targets asked in German,
+so `specific` DE went 9 -> 44 - and the answer did not change. Reranking on
+German is +3.8% overall [-3.0%, +11.0%], 13 wins to 7, p=0.263, and `specific`
+DE is +9.1% [-2.3%, +20.5%], p=0.289. Against +8.3% [+2.5%, +14.5%] on the mixed
+118. So the reranker's benefit is established in AGGREGATE and not established
+for German, at a sample size where that is now informative rather than merely
+underpowered. Do not quote the 55.6 -> 77.8 number. failures.md #37 and #41.
 
 Ranking: THREE stages as of Weekend 4 - `rrf w=0.20` over a 200-candidate pool,
 then a `Qwen3-Reranker-0.6B` cross-encoder whose rank replaces the cosine one
@@ -847,13 +924,34 @@ Two-stage baseline, for comparison: `rrf w=0.20` over a 200-candidate pool. reca
 call, so it is not a query measurement - Ollama swung 94-834ms after a host
 restart and made ranking look 20x slower than it is.
 
-WEEKEND 4 IS DONE. Item 1 reranking, item 4 grounded explanations, item 5 query
-relaxation and item 6 observability are shipped; item 3 (eval in CI) and item 2
-(hybrid sparse+dense) were both dropped by decision, not by failure. Item 2 was
-argued against on evidence rather than effort: it targets proper-noun retrieval,
-which `app/title_lookup.py` already handles by borrowing a named game's tags, and
-its natural beneficiary is `core` - the tier this file documents as unable to
-price anything. Nothing in the repo predicts it would move `tail`.
+WEEKEND 4 IS DONE AND THE PROJECT IS WOUND UP. Item 1 reranking, item 4 grounded
+explanations, item 5 query relaxation and item 6 observability are shipped; item
+3 (eval in CI) and item 2 (hybrid sparse+dense) were both dropped by decision,
+not by failure. Item 2 was argued against on evidence rather than effort: it
+targets proper-noun retrieval, which `app/title_lookup.py` already handles by
+borrowing a named game's tags, and its natural beneficiary is `core` - the tier
+this file documents as unable to price anything. Nothing in the repo predicts it
+would move `tail`.
+
+WEEKEND 5 (discount likelihood) IS SKIPPED, deliberately and on a checkable
+reason. BUILD_PLAN makes it conditional on a price collector running from day one
+of Weekend 1 - "by the time you reach this weekend you'll have several weeks of
+your own series" - and `price_history` exists nowhere in this repo except inside
+BUILD_PLAN's own text. Without that series there is no temporal split, no
+calibration curve, and none of the cross-source discrepancy story that was the
+point; the only price data here is a single Kaggle snapshot taken DURING a Steam
+sale, which is why `list_price_usd` is a generated column. It is also a different
+project - tabular time-series ML sharing a database with a retrieval system - and
+BUILD_PLAN itself calls it the highest-risk item in the file, because a wrong
+probability looks authoritative in a way a mediocre search result does not.
+
+The last thing built was the bigger German set that #37 asked for, and it
+returned a negative: see the German paragraph above. What remains open and is
+worth doing next, in order: a German document field in `embed_text` (the German
+gap is 16 points and is now attributed to the English corpus rather than to the
+reranker); a bounded queue with load shedding (30 concurrent searches take 209s
+each); trigram title matching for franchise names (#21); and the six tail targets
+that sit outside the 200-row pool, which need a different stage 1.
 
 Still worth carrying: trigram title matching for franchise names with
 ™/edition suffixes (failures.md #21).

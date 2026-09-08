@@ -23,6 +23,7 @@ Throwaway/eval category per CLAUDE.md: if it runs, it's fine.
 """
 
 import argparse
+import json
 import logging
 import statistics
 import time
@@ -64,8 +65,8 @@ class Case:
         return len(found) / len(self.expect), self.expect - found
 
 
-def load_cases() -> list[Case]:
-    with QUERIES_PATH.open(encoding="utf-8") as handle:
+def load_cases(path: Path = QUERIES_PATH) -> list[Case]:
+    with path.open(encoding="utf-8") as handle:
         return [Case(raw) for raw in yaml.safe_load(handle)]
 
 
@@ -94,6 +95,29 @@ def main() -> None:
     argp.add_argument("--limit", type=int, default=10, help="The k in recall@k.")
     argp.add_argument("--threshold", type=int, default=None, help="Min reviews.")
     argp.add_argument("--misses", action="store_true", help="List what was missed.")
+    # A DIFFERENT FILE IS A DIFFERENT MEASUREMENT, not a variant of this one.
+    # Recall compares configs on a FIXED set; two sets are never comparable to
+    # each other. queries_de.yaml exists so the German set can grow without
+    # invalidating every number measured on queries.yaml - it holds the same 118
+    # targets and tiers and changes only the language.
+    argp.add_argument(
+        "--queries",
+        type=Path,
+        default=QUERIES_PATH,
+        help="Query set to run. Defaults to eval/queries.yaml, which is the "
+        "fixed set every published number comes from. eval/queries_de.yaml is "
+        "the same targets asked in German.",
+    )
+    # Per-query scores, so two runs can be compared PAIRED rather than by their
+    # averages. CLAUDE.md has required a paired bootstrap and sign test before
+    # any comparison table since #37, and until now that lived in a scratch
+    # script. eval/compare_runs.py consumes these.
+    argp.add_argument(
+        "--dump",
+        type=Path,
+        default=None,
+        help="Write per-query scores here as JSON, for eval/compare_runs.py.",
+    )
     args = argp.parse_args()
 
     logging.basicConfig(level=logging.ERROR)  # the table is the output
@@ -110,7 +134,7 @@ def main() -> None:
     if settings.rank_method == "rerank":
         verify_rerank_model()
 
-    cases = load_cases()
+    cases = load_cases(args.queries)
     names: dict[int, str] = {}
     scores: dict[str, list[float]] = {"en": [], "de": []}
     elapsed: list[float] = []
@@ -120,10 +144,17 @@ def main() -> None:
     tiers: dict[str, list[float]] = {"core": [], "specific": [], "tail": []}
     cells: dict[tuple[str, str], list[float]] = {}
     returned_reviews: list[int] = []
+    per_query: list[dict[str, object]] = []
 
     mode_label = "parsed" if args.parse else "semantic only"
     threshold = settings.review_threshold if args.threshold is None else args.threshold
     print(f"\n{len(cases)} queries | recall@{args.limit} | {mode_label}")
+    # The SET belongs on this line as much as the model does. Two sets are never
+    # comparable to each other, so a table that does not say which one produced
+    # it is not reproducible - and queries_de.yaml has the same size, the same
+    # tiers and the same targets as queries.yaml, so nothing else on screen
+    # would distinguish them.
+    print(f"set:   {args.queries.name}")
     # Self-labelling: these decide the numbers below, and a results table
     # pasted into NOTES.md without them is not reproducible. The ranking line
     # matters as much as the model: "18.3%" means nothing without knowing
@@ -175,6 +206,7 @@ def main() -> None:
                 fell_back += 1
 
         recall, missed = case.recall([r.app_id for r in response.results], args.limit)
+        per_query.append({"query": case.query, "tier": case.tier, "recall": recall})
         scores[case.lang].append(recall)
         tiers[case.tier].append(recall)
         cells.setdefault((case.tier, case.lang), []).append(recall)
@@ -279,6 +311,34 @@ def main() -> None:
             f"    of which reranking:{statistics.median(rerank_times):>12.0f}ms"
             f"   (p95 {p95:.0f}ms)"
         )
+
+    if args.dump is not None:
+        # The CONFIG travels with the scores. A dump that does not say which
+        # model, set and rank method produced it is unpairable a week later, and
+        # compare_runs.py refuses to compare two dumps from different sets -
+        # recall is comparable across configs on a fixed set, never across sets.
+        args.dump.write_text(
+            json.dumps(
+                {
+                    "set": args.queries.name,
+                    "embed_model": settings.embed_model,
+                    "rank_method": settings.rank_method,
+                    "rerank_model": (
+                        settings.rerank_model
+                        if settings.rank_method == "rerank"
+                        else None
+                    ),
+                    "popularity_weight": settings.popularity_weight,
+                    "parsed": args.parse,
+                    "limit": args.limit,
+                    "queries": per_query,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        print(f"\n  wrote {len(per_query)} per-query scores to {args.dump}")
 
     if args.misses and misses:
         print("\nmissed:")

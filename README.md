@@ -253,18 +253,45 @@ That is the clearest missing feature. It was left out on purpose — it deserves
 its own measurement rather than being bundled into the popularity work and
 credited with its gains.
 
-**German is about 22 points behind English.** Changing embedding model does not
-fix it: swapping to the model sold on multilingual retrieval bought 20 points of
-English and zero German. The cause is that `embed_text` is English, so German
-queries are matched against English descriptions.
+**Asking in German costs 16.1 points, and that is now measured properly.** Every
+earlier EN/DE figure here was confounded: German was 37% `core` queries against
+English's 22%, so part of the gap was tier mix, and the per-tier matrix that
+fixed *that* still compared queries pointing at different games.
 
-The cross-encoder is the first thing that has ever moved it — German went 42.6%
-to 51.9%, and on detailed descriptions off a 55.6% that had been identical across
-two embedding models. **That result does not survive a paired test** (5 wins to
-2, p = 0.227) and is not claimed. It is a reason to build a larger German eval
-set before building a German document field, which inverts the previous
-conclusion: with 27 German queries, of which 9 are the tier that moved, this eval
-cannot tell the difference between a fix and a coincidence.
+`eval/queries_de.yaml` holds the **same 118 targets and tiers** as the English
+set, asked in German, so language is the only variable and the comparison is
+paired query by query:
+
+| | English | German | difference | sign test |
+| --- | --- | --- | --- | --- |
+| **overall, n=91** | 73.8% | 57.7% | **−16.1% [−25.8, −6.8]** | 4W 20L 67T, p = 0.002 |
+| specific, n=35 | 91.4% | 65.7% | −25.7% [−42.9, −8.6] | 1W 10L 24T, p = 0.012 |
+| tail, n=36 | 80.6% | 69.4% | −11.1% [−25.0, +2.8] | 2W 6L 28T, p = 0.289 |
+| core, n=20 | 30.8% | 22.5% | −8.3% [−21.7, +3.3] | 1W 4L 15T, p = 0.375 |
+
+So the overall gap is real, it lands almost entirely on detailed descriptions,
+and the `core` and `tail` gaps are **not** distinguishable from zero. 67 of 91
+queries tie, which is why the paired test matters: the whole result rests on 24
+queries and an unpaired comparison would have buried that.
+
+The cause is that `embed_text` is English, so German queries are matched against
+English descriptions. Swapping to the model sold on multilingual retrieval bought
+20 points of English and zero German.
+
+**And the cross-encoder does not fix it either — a claim this README previously
+deferred and now retires.** The earlier reading was that reranking moved German
+off a stuck 55.6%; it failed a paired test at n=9, and the stated next step was
+to build a bigger German set. That set now exists, `specific` German went from 9
+queries to 44, and the answer did not change: **+3.8% [−3.0%, +11.0%], 13 wins to
+7, p = 0.263**, with `specific` at +9.1% [−2.3%, +20.5%]. Against +8.3% [+2.5%,
++14.5%] on the mixed set. Reranking's benefit is established in aggregate and
+**not** established for German — at a sample size where that is now informative
+rather than merely underpowered. The next thing to try is a German document
+field, not a better reranker.
+
+One honest limit on all of the above: these are German renderings of a fixed set
+of requests, so they measure *the penalty for asking in German*, not how German
+players actually phrase things.
 
 **The long tail is searched, but only just.** 44 queries target games with
 30–300 reviews and 77.3% come back. Reranking cannot rescue the rest: measuring
@@ -350,9 +377,11 @@ used 20 and the guard silently did nothing at the boundary it existed to police.
 queries scoring identically between two good configurations, it has far less
 discriminating power than "118 labelled queries" suggests. It settled reranking
 versus no reranking comfortably and could not separate two rerankers at all. A
-paired bootstrap is now the precondition for any comparison table — but it lives
-in a scratch script rather than in `eval/`, which is the next thing that should
-be built there.
+paired bootstrap and a sign test are the precondition for any comparison table
+here, and they now live in `eval/paired.py` with a self-test rather than in a
+scratch script — `run_eval --dump` writes per-query scores and
+`eval/compare_runs.py` pairs two of them, refusing dumps from different query
+sets or rows that do not line up.
 
 ## On the numbers above
 

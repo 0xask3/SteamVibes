@@ -2093,3 +2093,72 @@ events, and with a deliberately broken `CHAT_MODEL` a single search reported
 that call failed too - but the count is of parser CALLS, not requests, so
 dividing it by `search.n` would give a rate above 100%. Counting the startup
 failure is right; presenting it next to a request count without saying so is not.
+
+---
+
+### 41. The German gain was never there, and it took 13x the sample to say so (2026-09-08)
+
+**The claim under test.** `Qwen3-Reranker` appeared to move German `specific`
+recall from 55.6% - a number two different embedding models had left
+byte-identical - to 77.8%, collapsing that tier's EN/DE gap from 30.2 points to
+13.7. It was the only thing in the project that had ever moved German. #37
+recorded it as failing a paired test (5 wins to 2, p=0.227) at n=9 and said the
+honest response was to build a bigger German set rather than to quote it.
+
+**The set.** `eval/queries_de.yaml`: the same 118 targets and the same tier
+assignment as `queries.yaml`, asked in German. Generated from the source file
+rather than written out, because 148 `expect` entries retyped by hand would
+produce a typo and queries.yaml's own header points out that a typo there looks
+exactly like a recall failure. `specific` German went from 9 queries to 44.
+
+**The answer, and it is a negative.**
+
+```
+                 rrf     rerank    difference            sign test
+overall n=118   52.5%    56.4%    +3.8% [-3.0, +11.0]   13W 7L 98T  p=0.263
+specific n=44   59.1%    68.2%    +9.1% [-2.3, +20.5]    6W 2L 36T  p=0.289
+tail     n=44   70.5%    68.2%    -2.3% [-15.9, +11.4]   4W 5L 35T  p=1.000
+core     n=30   16.7%    21.7%    +5.0% [ +0.0, +10.0]   3W 0L 27T  p=0.250
+```
+
+Against **+8.3% [+2.5%, +14.5%]** for the same change on the mixed 118-query set.
+So the reranker's benefit is established in AGGREGATE and is not established for
+German. The point estimate barely moved between n=9 and n=44 - it is not that
+the effect shrank, it is that it was never separable from noise, and only the
+larger sample makes that a finding rather than a shrug.
+
+**The set also produced the first EN/DE number worth quoting.** Every previous
+one was confounded twice over: German was 37% `core` queries against English's
+22%, so the aggregate gap was partly tier mix, and the per-tier matrix that fixed
+that still compared queries pointing at DIFFERENT GAMES. Holding targets and
+tiers fixed leaves language as the only variable, over 91 matched pairs:
+
+```
+overall  n=91   EN 73.8%   DE 57.7%   -16.1% [-25.8, -6.8]   4W 20L 67T  p=0.002
+specific n=35   EN 91.4%   DE 65.7%   -25.7% [-42.9, -8.6]   1W 10L 24T  p=0.012
+tail     n=36   EN 80.6%   DE 69.4%   -11.1% [-25.0, +2.8]   2W  6L 28T  p=0.289
+core     n=20   EN 30.8%   DE 22.5%    -8.3% [-21.7, +3.3]   1W  4L 15T  p=0.375
+```
+
+The gap is real, it is 16 points, and it lands almost entirely on detailed
+descriptions - `core` and `tail` are not distinguishable from zero. 67 of 91
+queries tie, so the whole result rests on 24 of them, which an unpaired
+comparison of two averages would have hidden completely.
+
+**What to take from this.** Two things. First, "build a bigger set" is a real
+answer to an underpowered result, and it has to actually be built - the claim sat
+in CLAUDE.md marked *do not quote* for a whole weekend, which is exactly how a
+deferred number turns into a believed one. Second, the negative is worth more
+than the positive would have been: it says the next thing to try for German is a
+German document field in `embed_text`, not a better reranker, and that redirects
+work rather than decorating it.
+
+**A smaller thing found on the way.** CLAUDE.md's recorded `p=0.105` for
+Qwen3-vs-bge is the ONE-SIDED tail of an 11-5 split; two-sided it is 0.2101.
+Both are correct for the same data and nothing said which convention was in use.
+`eval/paired.py` is two-sided - "are these different" is not a directional
+hypothesis, and picking the direction after seeing which arm won is what makes a
+one-sided test flattering - and its self-test asserts both numbers so the two can
+never be silently compared. No published claim changes; the split was not
+significant either way.
+

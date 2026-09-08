@@ -1,0 +1,631 @@
+# The SAME 118 targets as queries.yaml, asked in German. Run with
+# `uv run python -m eval.run_eval --queries eval/queries_de.yaml`.
+#
+# GENERATED from queries.yaml by holding `expect`, `tier` and `from` fixed and
+# replacing only the query text. app_ids were copied, never retyped - 148 of
+# them transcribed by hand would produce a typo, and a typo here looks exactly
+# like a recall failure.
+#
+# WHY A SEPARATE FILE. Recall is not comparable across query SETS, only across
+# configs on a fixed set; adding these to queries.yaml would invalidate every
+# number in README.md and CLAUDE.md. queries.yaml stays frozen at 118 and this
+# is measured beside it.
+#
+# WHY THE SAME TARGETS. The aggregate EN/DE rows in run_eval were never a
+# language measurement: German was 37% core queries against English's 22%, so
+# part of any gap was tier mix rather than language. Holding the targets AND the
+# tier assignment fixed removes that, and target choice with it, which leaves
+# language as the only variable. Same controlled-contrast logic as `specific`
+# and `tail` being mirror samplers that differ only in review band.
+#
+# WHAT IT IS NOT. These are German renderings of a fixed set of requests, not
+# queries collected from German players. They therefore measure the penalty for
+# asking in German rather than how Germans actually phrase things - a real
+# limitation, and the reason this is a second file rather than a replacement.
+# Genre loanwords are left in English (Roguelike, Metroidvania, Souls-like,
+# Deckbuilder, Beat 'em up) because that is how German gaming discourse writes
+# them; translating them would measure a vocabulary nobody uses.
+#
+# The 27 rows that were already German in queries.yaml carry over verbatim, so
+# for those the two files agree and the EN/DE comparison uses the other 91.
+
+# --- core ---
+
+- query: gemütliche Farm-Simulation mit Angeln
+  lang: de
+  tier: core
+  expect: [413150, 666140, 1158160]
+
+- query: Koop-Survival mit Crafting und Basenbau
+  lang: de
+  tier: core
+  expect: [892970, 1169040, 105600]
+
+- query: extrem schweres Souls-like
+  lang: de
+  tier: core
+  expect: [367520, 774361, 283640]
+
+- query: Roguelike, bei dem die Karte in jedem Durchlauf neu erzeugt wird
+  lang: de
+  tier: core
+  from: "failures.md #7 - jargon read literally"
+  expect: [1145360, 588650, 646570]
+
+- query: entspanntes Rätselspiel, nichts Gruseliges
+  lang: de
+  tier: core
+  from: "failures.md #1 - negation in free text"
+  expect: [736260, 210970, 1049410]
+
+- query: Fabrikautomatisierung und Logistik
+  lang: de
+  tier: core
+  expect: [427520, 526870]
+
+- query: Kolonie-Management-Simulation
+  lang: de
+  tier: core
+  expect: [294100, 457140]
+
+- query: Städtebauspiel
+  lang: de
+  tier: core
+  expect: [255710, 323190]
+
+- query: Deckbuilding-Roguelike
+  lang: de
+  tier: core
+  expect: [646570, 1102190, 1092790]
+
+- query: Mystery-Spiel in einer Zeitschleife, in der man denselben Tag immer wieder erlebt
+  lang: de
+  tier: core
+  expect: [753640]
+
+- query: Detektivspiel, in dem man rekonstruiert, was passiert ist
+  lang: de
+  tier: core
+  expect: [653530, 632470]
+
+- query: Rätselspiel aus der Ich-Perspektive mit Portalen
+  lang: de
+  tier: core
+  expect: [620, 257510]
+
+- query: Unterwasser-Survival und Erkundung
+  lang: de
+  tier: core
+  expect: [264710]
+
+- query: Metroidvania mit präzisem Kampfsystem
+  lang: de
+  tier: core
+  expect: [367520, 774361]
+
+- query: erzählerischer Walking Simulator mit starker Geschichte
+  lang: de
+  tier: core
+  expect: [383870]
+
+- query: Horrorspiel, das Beklemmung aufbaut, ohne Jumpscares
+  lang: de
+  tier: core
+  from: "failures.md #10 - brutal reads as gore"
+  expect: [282140]
+
+- query: chaotisches Koop-Kochspiel für eine Partyrunde
+  lang: de
+  tier: core
+  expect: [448510, 728880]
+
+- query: Rhythmusspiel, bei dem man sich im Takt bewegt
+  lang: de
+  tier: core
+  expect: [247080]
+
+- query: kurzes, herzerwärmendes Spiel, das man an einem Abend durchspielt
+  lang: de
+  tier: core
+  from: "failures.md #6 - player context read as content"
+  expect: [1055540, 837470]
+
+- query: gemütliches Spiel über Gespräche und Atmosphäre
+  lang: de
+  tier: core
+  expect: [914800]
+
+- query: gemütliches Aufbauspiel für zwei
+  lang: de
+  tier: core
+  from: "failures.md #9 - social constraints"
+  expect: [892970, 1169040]
+
+- query: entspanntes Spiel zum Abschalten
+  lang: de
+  tier: core
+  expect: [1055540, 413150, 914800]
+
+- query: sehr schweres Spiel wie Dark Souls
+  lang: de
+  tier: core
+  expect: [367520, 774361]
+
+- query: Aufbauspiel mit Automatisierung
+  lang: de
+  tier: core
+  expect: [427520, 526870]
+
+- query: Roguelike bei dem sich die Karte jedes Mal ändert
+  lang: de
+  tier: core
+  expect: [1145360, 588650]
+
+- query: entspanntes Bauernhofspiel mit Angeln
+  lang: de
+  tier: core
+  expect: [413150, 666140]
+
+- query: Städtebau-Simulation
+  lang: de
+  tier: core
+  expect: [255710, 323190]
+
+- query: Horrorspiel ohne Jumpscares
+  lang: de
+  tier: core
+  expect: [282140]
+
+- query: kooperatives Kochspiel für Freunde
+  lang: de
+  tier: core
+  expect: [448510, 728880]
+
+- query: Rätselspiel mit Portalen
+  lang: de
+  tier: core
+  expect: [620, 257510]
+
+# --- specific ---
+
+- query: man surft durch ein nachgebautes Internet der 90er und meldet, was man findet
+  lang: de
+  tier: specific
+  expect: [844590]
+
+- query: friedliches Kletterspiel ohne Gegner, nur der Aufstieg
+  lang: de
+  tier: specific
+  expect: [1977170]
+
+- query: mit dem Mountainbike einen Bergtrail hinunterfahren, ohne Kampf
+  lang: de
+  tier: specific
+  expect: [711540]
+
+- query: ruhiges Spiel darüber, wie Pflanzen langsam Ruinen überwuchern
+  lang: de
+  tier: specific
+  expect: [1372320]
+
+- query: ein kleines Café voller Katzen führen
+  lang: de
+  tier: specific
+  expect: [1354830]
+
+- query: als Maus durch eine verfallene Burg schleichen
+  lang: de
+  tier: specific
+  expect: [417290]
+
+- query: eine Hexe sammelt Zutaten und braut Flüche in einem Märchenwald
+  lang: de
+  tier: specific
+  expect: [729000]
+
+- query: Rätselspiel aus der Ich-Perspektive, in dem einen der Schatten tötet
+  lang: de
+  tier: specific
+  expect: [994140]
+
+- query: Rätselspiel, in dem man kleine Büroangestellte programmiert
+  lang: de
+  tier: specific
+  expect: [375820]
+
+- query: viktorianische Forscher verlieren auf einer Expedition den Verstand
+  lang: de
+  tier: specific
+  expect: [358130]
+
+- query: eine Stadt auf schwimmenden Plattformen nach einem Atomkrieg bauen
+  lang: de
+  tier: specific
+  expect: [809140]
+
+- query: eine mittelalterliche Stadt mit Förderbändern über Hügel automatisieren
+  lang: de
+  tier: specific
+  expect: [860890]
+
+- query: Deckbuilder, in dem man mit Würfeln statt mit Karten kämpft
+  lang: de
+  tier: specific
+  expect: [1755830]
+
+- query: rundenbasiertes Taktik-Roguelike in einer Gladiatorenarena
+  lang: de
+  tier: specific
+  expect: [1668690]
+
+- query: Noir-Shooter mit Vampiren und Schießereien in Zeitlupe
+  lang: de
+  tier: specific
+  expect: [1546310]
+
+- query: Kreaturen aus den Rändern mittelalterlicher Handschriften kämpfen rundenweise
+  lang: de
+  tier: specific
+  expect: [957960]
+
+- query: gemütliches Spiel, in dem man als Bär eine Pension führt
+  lang: de
+  tier: specific
+  expect: [1136370]
+
+- query: Rätselspiel, bei dem man die Regeln selbst erraten muss
+  lang: de
+  tier: specific
+  expect: [1299400]
+
+- query: Puzzlespiel, in dem man Eisenbahnstrecken baut
+  lang: de
+  tier: specific
+  expect: [602320]
+
+- query: ruhiges Spiel übers Fotografieren in schöner Landschaft
+  lang: de
+  tier: specific
+  expect: [1749860]
+
+- query: Detektivspiel, in dem man Szenen beobachtet und Lücken füllt
+  lang: de
+  tier: specific
+  expect: [2716400]
+
+- query: Monster sammeln und endlos Dungeons erkunden
+  lang: de
+  tier: specific
+  expect: [1289810]
+
+- query: man setzt bunte Häuser und daraus wächst von selbst eine Stadt
+  lang: de
+  tier: specific
+  expect: [1291340]
+
+- query: Schachvariante, bei der die Figuren durch die Zeit reisen
+  lang: de
+  tier: specific
+  expect: [1349230]
+
+- query: Haustier-Simulation, in der man Hunde aufzieht, die zu wabbeligen Formen mutieren
+  lang: de
+  tier: specific
+  expect: [1424330]
+
+- query: Spiel, in dem man freundliche Briefe an Fremde schreibt
+  lang: de
+  tier: specific
+  expect: [1070710]
+
+- query: Heist-Spiel, in dem man durch jede Wand bricht, um die Route zu planen
+  lang: de
+  tier: specific
+  expect: [1167630]
+
+- query: handgezeichnete Schwarz-Weiß-Szenen, in denen man versteckte Menschen sucht
+  lang: de
+  tier: specific
+  expect: [435400]
+
+- query: Kriminalfall, gezeichnet wie eine mittelalterliche Buchmalerei
+  lang: de
+  tier: specific
+  expect: [1205520]
+
+- query: Hacking-Spiel, das über ein echt wirkendes Terminal gespielt wird
+  lang: de
+  tier: specific
+  expect: [365450]
+
+- query: mit einem Kombi durch eine übernatürliche Sperrzone fahren
+  lang: de
+  tier: specific
+  expect: [1458140]
+
+- query: Multiplayer-Chatraum, in dem alle gemeinsam als Tiere angeln
+  lang: de
+  tier: specific
+  expect: [3146520]
+
+- query: Spiel aus der Ich-Perspektive, in dem ein Erzähler mit den eigenen Entscheidungen hadert
+  lang: de
+  tier: specific
+  expect: [221910]
+
+- query: einen Gegenstandsladen führen und mit den Abenteurern feilschen, die dort kaufen
+  lang: de
+  tier: specific
+  expect: [70400]
+
+- query: eine Tochter über Jahre großziehen und ihren Unterricht und ihre Hobbys wählen
+  lang: de
+  tier: specific
+  expect: [1669980]
+
+- query: einen alten Fall aufklären, indem man eine verlassene Stadt erkundet und Dokumente liest
+  lang: de
+  tier: specific
+  expect: [624270]
+
+- query: Monster jagen und zu Gerichten verkochen, die Fähigkeiten verleihen
+  lang: de
+  tier: specific
+  expect: [799640]
+
+- query: Spiel, in dem man als Katze durch eine Stadt streift und Unfug macht
+  lang: de
+  tier: specific
+  expect: [1177980]
+
+- query: Arena-Shooter, in dem man möglichst lange gegen endlose Dämonen überlebt
+  lang: de
+  tier: specific
+  expect: [422970]
+
+- query: als Praktikant in einem totalitären Ministerium arbeiten und Kollegen bespitzeln
+  lang: de
+  tier: specific
+  expect: [761620]
+
+- query: ein Verschwinden aus Bruchstücken erinnerter Aussagen rekonstruieren
+  lang: de
+  tier: specific
+  expect: [2676840]
+
+- query: Tränke brauen und feilschen, um geerbte Schulden abzuzahlen
+  lang: de
+  tier: specific
+  expect: [1874490]
+
+- query: als wechselnde Jugendliche per Anhalter Richtung Grenze reisen
+  lang: de
+  tier: specific
+  expect: [1466640]
+
+- query: Extraction-Shooter aus der Vogelperspektive in einer osteuropäischen Ödnis
+  lang: de
+  tier: specific
+  expect: [1782120]
+
+# --- tail ---
+
+- query: Arcade-Spiel, in dem man als streunender Hund Leute anbellt, um Essen zu klauen
+  lang: de
+  tier: tail
+  expect: [762610]
+
+- query: Brettspiel, in dem man einen Laser abfeuert und ihn an verspiegelten Figuren umlenkt
+  lang: de
+  tier: tail
+  expect: [312720]
+
+- query: Golf, bei dem man den Ball mit Waffen schießt statt mit Schlägern
+  lang: de
+  tier: tail
+  expect: [951740]
+
+- query: Roboterköche programmieren, die am Fließband Gerichte zubereiten
+  lang: de
+  tier: tail
+  expect: [990900]
+
+- query: kooperatives Heist-Brettspiel, in dem man eine Bank Stockwerk für Stockwerk ausraubt
+  lang: de
+  tier: tail
+  expect: [705550]
+
+- query: Skateboard-Tricks auf einem Schnellboot in einem Neon-Miami
+  lang: de
+  tier: tail
+  expect: [761010]
+
+- query: alberne Physikspielerei, bei der die Hände Baseballschläger sind
+  lang: de
+  tier: tail
+  expect: [2012100]
+
+- query: als Katze auf einem Staubsaugerroboter einen Bus fahren
+  lang: de
+  tier: tail
+  expect: [1851730]
+
+- query: friedliches Spiel über das Fangen echter Insekten und das Führen eines Insektenladens
+  lang: de
+  tier: tail
+  expect: [2265310]
+
+- query: Wimmelbildspiel, in dem man in Gemälden versteckte Bienen sucht
+  lang: de
+  tier: tail
+  expect: [2625170]
+
+- query: Aufbauspiel, bei dem das Wasser immer weiter steigt und man in die Höhe baut
+  lang: de
+  tier: tail
+  expect: [1795470]
+
+- query: Kolonieaufbau auf Hexfeldern mit Lieferketten auf einem Vulkanplaneten
+  lang: de
+  tier: tail
+  expect: [1090100]
+
+- query: düstere rundenbasierte Strategie über Bohrungen tief unter einer sterbenden Erde
+  lang: de
+  tier: tail
+  expect: [2924310]
+
+- query: Manager-Spiel über die Leitung eines Radsport-Profiteams
+  lang: de
+  tier: tail
+  expect: [1237070]
+
+- query: Baseball-Spiel, das komplett im letzten Inning mit Würfeln und Karten läuft
+  lang: de
+  tier: tail
+  expect: [705020]
+
+- query: Erzählspiel über den ersten Kontakt im Kanada des 17. Jahrhunderts
+  lang: de
+  tier: tail
+  expect: [1671740]
+
+- query: einen Buchladen führen und Fälle von kosmischem Horror untersuchen
+  lang: de
+  tier: tail
+  expect: [1225820]
+
+- query: Tamagotchi-artiges Spiel, in dem man einen kleinen Dinosaurier großzieht
+  lang: de
+  tier: tail
+  expect: [1730110]
+
+- query: Spiel darüber, ein autoritäres Land zu verlassen, bevor man eingezogen wird
+  lang: de
+  tier: tail
+  expect: [2068980]
+
+- query: ruhiges Spiel über ein italienisches Dorf, das für einen Stausee geflutet wurde
+  lang: de
+  tier: tail
+  expect: [1283370]
+
+- query: Puzzlespiel, das Schachzüge mit dem Schieben von Figuren verbindet
+  lang: de
+  tier: tail
+  expect: [1784220]
+
+- query: Metroidvania über einen Piraten auf einer verfluchten Insel
+  lang: de
+  tier: tail
+  expect: [1933370]
+
+- query: Beat 'em up, in dem man sein Zimmer mit Fallen gegen Eindringlinge verteidigt
+  lang: de
+  tier: tail
+  expect: [1179890]
+
+- query: Puzzlespiel, in dem man Vögel ordentlich in Formen einpasst
+  lang: de
+  tier: tail
+  expect: [2707110]
+
+- query: Jump'n'Run, das einem HTML und CSS beibringt
+  lang: de
+  tier: tail
+  expect: [502210]
+
+- query: Erzählspiel über ein Auto, das auf einer Klippenkante balanciert
+  lang: de
+  tier: tail
+  expect: [706130]
+
+- query: Pixel-Aufbauspiel über das Führen eines japanischen Restaurants
+  lang: de
+  tier: tail
+  expect: [1952170]
+
+- query: Puzzle im Lemmings-Stil, in dem man Roboter davon abhält, in den Tod zu laufen
+  lang: de
+  tier: tail
+  expect: [1745800]
+
+- query: Rätselspiel, in dem man Lichtstrahlen durch eine Maschine umlenkt
+  lang: de
+  tier: tail
+  expect: [1257850]
+
+- query: U-Boot-Spiel im Zweiten Weltkrieg, das Konvois im Atlantik jagt
+  lang: de
+  tier: tail
+  expect: [365260]
+
+- query: Bewegungsspiel aus der Ich-Perspektive über Wallrunning und Strafe-Jumping
+  lang: de
+  tier: tail
+  expect: [1966930]
+
+- query: Horrorspiel in einer Welt, in der KI die Autoren ersetzt hat
+  lang: de
+  tier: tail
+  expect: [3058940]
+
+- query: Spiel, in dem man Zaubersprüche mit visueller Programmierung zusammenbaut
+  lang: de
+  tier: tail
+  expect: [1482640]
+
+- query: Arcade-Rennspiel übers Autoverschrotten wie die alten Destruction-Derby-Spiele
+  lang: de
+  tier: tail
+  expect: [785760]
+
+- query: Nachtschicht, in der man Überwachungskameras auf Anomalien prüft
+  lang: de
+  tier: tail
+  expect: [2358620]
+
+- query: Rhythmusspiel, das die Tastatur in ein Chiptune-Instrument verwandelt
+  lang: de
+  tier: tail
+  expect: [372690]
+
+- query: Survival-Spiel, in dem man sich von einem Einzeller aufwärts entwickelt
+  lang: de
+  tier: tail
+  expect: [1839930]
+
+- query: Nudeln auf einem Hoverbike ins Jenseits liefern
+  lang: de
+  tier: tail
+  expect: [2014420]
+
+- query: Ein-Knopf-Flappy-Spiel übers Küssen
+  lang: de
+  tier: tail
+  expect: [982350]
+
+- query: Social Deduction mit Überlebenden, die in einer verschneiten Hütte festsitzen
+  lang: de
+  tier: tail
+  expect: [1382190]
+
+- query: Sokoban-Rätsel, in dem man außerirdische Schnecken herumschiebt
+  lang: de
+  tier: tail
+  expect: [1214850]
+
+- query: Stealth aus der Ich-Perspektive über einen Dieb, der im Dunkeln durch Häuser schleicht
+  lang: de
+  tier: tail
+  expect: [1355650]
+
+- query: Arcade-Spiel, in dem man Wörter tippt, um Gegner zu zerstören
+  lang: de
+  tier: tail
+  expect: [1288410]
+
+- query: einen Dungeon bauen und Dämonen gegen eindringende Helden befehligen
+  lang: de
+  tier: tail
+  expect: [2909910]
