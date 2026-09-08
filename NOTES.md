@@ -4,6 +4,93 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-08 - Thirty searches at once take 209 seconds each
+
+**What broke.** A concurrency check on the metrics recorder - 30 parallel
+searches, to prove the lock does not lose or duplicate records - timed out at a
+180s client deadline. I had budgeted 180s for 30 requests that take 2.4s each.
+
+**What I tried.** Read the per-request log lines the same change had just added:
+`search 'parallel probe 7' -> 5 results in 209446ms (parse 70175, relax 4, embed
+267, query 59, rerank 138657)`. So the requests were not stuck, they were
+queueing - a single search spending 70s in the parser and 139s in the reranker.
+One GPU holds Ollama's resident 6.6GB chat model and the in-process
+cross-encoder, and nothing bounds how many requests contend for it.
+
+**What fixed it.** Nothing, and that is the finding: the API is a single-user
+system under load, which is now written down in README with a number attached
+rather than left to be discovered. The recorder itself was fine - log lines and
+`search.n` agreed exactly at every observation. The lesson for the check: a
+concurrency test on a component must not be run through a pipeline whose
+bottleneck is a shared GPU, or it measures the GPU. Re-run it against
+`RANK_METHOD=rrf`, where a search is ~50ms and the lock is the only thing
+under test.
+
+---
+
+## 2026-09-08 - The p95 guard that did nothing at exactly its own boundary
+
+**What broke.** `/api/stats` withholds p95 until enough samples exist, because
+below that the "95th percentile" is just the largest value and printing the
+largest value under a p95 label is a wrong label rather than a rough number. I
+set the threshold to 20 by eye. The check script printed `n=20 p50=110.0
+p95=119.0 max=119.0` - p95 and max were the same number, so at the exact
+boundary the guard permitted the thing it existed to forbid.
+
+**What I tried.** Enumerated the nearest-rank index against n rather than
+reasoning about it. The index is `min(n-1, int(n*0.95))`, and it equals `n-1`
+for every n up to 20: at n=20 it is `int(19.0) = 19 = n-1`. The first n where
+p95 stops being the maximum is **21**, not 40 and not 100.
+
+**What fixed it.** `MIN_P95_SAMPLES = 21`, plus two assertions in the check
+script so it cannot regress silently: `p95 < max` at the threshold, and a
+derived check that recomputes the boundary from the formula and requires the
+constant to equal it. What caught this was printing p95 beside max rather than
+asserting p95 was merely non-null - the same lesson as the explanation verifier
+in #38. A guard that has never been shown to fire is not known to work.
+
+---
+
+## 2026-09-08 - Two identical eval runs, 20x apart on latency
+
+**What broke.** `run_eval` after the observability change reported median search
+1,844ms and reranking p95 21,284ms, against documented figures of 1,021ms and
+1,376ms. That reads exactly like a regression from the change just made.
+
+**What I tried.** Checked recall first: 68.8 / 27.2 / 88.6 / 77.3, byte-identical
+to the committed table, and 71% under 1k. A change that slowed reranking 20x
+without moving a single query is not a ranking change. Then checked the GPU:
+8.3GB of 16.4GB in use, Ollama holding a resident 6.6GB chat model, after I had
+restarted the API four times in a row and reloaded the cross-encoder each time.
+
+**What fixed it.** Nothing in the code - re-running it gave 1,169ms median and
+1,573ms rerank p95, back at the documented numbers. The lesson is that rerank
+latency is a measurement of the machine's VRAM state as much as of the model,
+so a latency figure taken right after other GPU work is not a measurement. The
+recall column is what said the difference was environmental; without it I would
+have gone looking through a diff that could not possibly have caused it.
+
+---
+
+## 2026-09-08 - The parser costs more than the cross-encoder
+
+**What broke.** Nothing - this is what item 6 was for. The whole project has
+treated the reranker as the expensive stage, on the strength of it being the
+thing bought deliberately with latency.
+
+**What I tried.** 50 real searches through `/api/stats`, nothing excluded:
+parse 1,217ms p50, rerank 1,048ms, query 46ms, embed 31ms, relax 3ms.
+
+**What fixed it.** No fix - a corrected belief. The dominant cost is the LLM
+parse, which nobody classes as a ranking stage, and that makes the editable-chip
+path worth more than "14x faster on a chip edit" conveyed: it removes the single
+largest stage. It also showed the relaxation ladder costs 3ms on live traffic
+rather than the 11-24ms its design note claims, because that range was the worst
+case across scenarios and most queries stop at their first count. Both numbers
+were in the repo as assertions before there was anything that could check them.
+
+---
+
 ## 2026-09-08 - Relaxation: the cheap loop, and the two things I got wrong testing it
 
 **What broke.** Nothing - this was item 5. A query whose filters match almost

@@ -249,6 +249,14 @@ class Settings(BaseSettings):
     # ranking 12 survivors is the filter choosing the results, not the vector.
     relax_target_rows: int | None = None
 
+    # How many requests /api/stats keeps per endpoint. A ring buffer in memory,
+    # so this is the whole memory cost and it does not grow with uptime.
+    #
+    # It is a count of REQUESTS, not a period of time, which is why the endpoint
+    # returns it: "p95 over the last 500 requests" is a claim somebody can check
+    # and "p95" on its own is not.
+    stats_window: int = 500
+
     @model_validator(mode="after")
     def _pool_fits_in_search(self) -> Settings:
         """Refuse a rerank pool the index cannot fill.

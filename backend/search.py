@@ -85,6 +85,11 @@ def print_response(response: SearchResponse) -> None:
         print_result(rank, result)
 
     timings = f"embed {response.embed_ms:.0f}ms  |  query {response.query_ms:.0f}ms"
+    # The relaxation ladder charges every search, not only the ones it widens -
+    # one capped count even when nothing needed relaxing. That baseline is the
+    # number worth being able to see.
+    if response.relax_ms is not None:
+        timings = f"relax {response.relax_ms:.0f}ms  |  " + timings
     # Only when a cross-encoder actually ran. Shown beside the others because
     # the reranker is bought with latency, and a hidden cost cannot be argued.
     if response.rerank_ms is not None:

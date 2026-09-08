@@ -101,6 +101,10 @@ complaining, and `torch.cuda.is_available()` simply returns `False`.
                      v  games.tags, and 4.6% thrown away for failing that
 ```
 
+Every stage above is timed on every request, logged as one line, and aggregated
+into `GET /api/stats` as p50/p95 over the last 500 requests — see
+[Where the time actually goes](#results).
+
 Deliberately plain where it can be: no agent loop, no LangChain, one direct HTTP
 call per model. The CLI, the API and the eval all call the same `search()`, so
 there is one ranking implementation rather than three.
@@ -175,6 +179,32 @@ which 1,021ms is the cross-encoder scoring 200 pairs.
 Median reviews of everything returned: 180, with 71% under 1,000. That pair is a
 counter-metric and matters more than the recall column — the reranker did not buy
 its points by deleting the long tail.
+
+**Where the time actually goes.** `GET /api/stats` keeps per-stage percentiles
+over the last 500 requests. 50 searches through the API one at a time, nothing
+excluded:
+
+| stage | p50 | p95 | max |
+| --- | --- | --- | --- |
+| parse | 1,217ms | 1,493ms | 1,606ms |
+| relax | 3ms | 11ms | 12ms |
+| embed | 31ms | 37ms | 85ms |
+| query | 46ms | 234ms | 400ms |
+| rerank | 1,048ms | 1,816ms | 9,283ms |
+| **total** | **2,397ms** | **3,206ms** | 10,901ms |
+
+Two things in that table were not what I expected. **The parser costs more than
+the cross-encoder** — 1,217ms against 1,048ms at p50 — so the expensive stage is
+the one nobody thinks of as a ranking stage, and the editable-chip path, which
+skips it entirely, is worth more than it looks. And the relaxation ladder costs
+**3ms** on real queries against the 11–24ms its design note claims, because that
+figure was the worst case across scenarios and most queries pass their first
+count.
+
+`max` is where the honesty is: 9,283ms of reranking is one request paying the
+cold model load, and it stays in the window. Excluding slow requests to make a
+latency number look better is the failure this whole project is arguing against,
+so nothing is dropped and `n` is reported beside every figure instead.
 
 **Choosing the embedding model.** Three models, same queries, same grid.
 `snowflake-arctic-embed2` beat `qwen3-embedding:0.6b` by 6.7 points overall and
@@ -282,12 +312,39 @@ defect, not a compromise.
 No model is in that loop. An agent would ask the LLM which constraint to drop;
 this asks a table, in a fixed order, with a stopping condition. It is
 reproducible, testable, free, and cannot invent a constraint that was never
-there. It runs on capped `COUNT` queries (11–24ms each) rather than retried
-searches, so a relaxed query still pays for exactly one embed and one rerank
-instead of three.
+there. It runs on capped `COUNT` queries rather than retried searches, so a
+relaxed query still pays for exactly one embed and one rerank instead of three.
+Design-time measurement put a capped count at 11–24ms depending on selectivity;
+`/api/stats` since put the whole ladder at **3ms p50 over 50 sequential API
+searches**, because the 11–24ms was the worst case across scenarios and most
+queries stop at their first count. Either way it is against ~1,050ms of
+cross-encoder per retry avoided. Under 30-way concurrency it rises to 30ms, which
+is the database contending with itself, not the ladder doing more work.
 
 **Franchise exclusion is coarse.** "excluding call of duty" is a prefix match, so
 it drops all 24 entries — sequels and spinoffs included.
+
+**It is a single-user system, and now there is a number for that.** Thirty
+concurrent searches took **209 seconds each** — against 2.4s served one at a
+time. One GPU is running Ollama's 6.6GB chat model and the in-process
+cross-encoder, FastAPI's threadpool accepts every request, and nothing limits
+how many pile onto the card: the per-request log shows single searches spending
+70–148s in parse and 62–175s in reranking. Endpoints are `def` rather than
+`async def` so no request blocks the event loop, which is the right call and
+does nothing about GPU contention. A queue with a bounded depth, and shedding
+load past it, is what this needs; there isn't one. This was found by the
+observability work rather than assumed, which is roughly the point of it.
+
+**`/api/stats` is a diagnostic, not telemetry.** It is a ring buffer in the
+server process: it covers the last 500 *requests* rather than a period of time,
+resets on restart, and would fragment across workers if the API were ever run
+with more than one. It also sees API traffic only, so its p50 and the median
+`run_eval` prints are different measurements and must not be quoted
+interchangeably. The one guard that stops it lying outright: **p95 is withheld
+until 21 requests**, because with nearest-rank percentiles anything below that
+returns the maximum, and labelling the maximum "p95" is wrong rather than merely
+rough. 21 is exact — at n=20 the index is still the last element. A first pass
+used 20 and the guard silently did nothing at the boundary it existed to police.
 
 **The eval cannot referee close calls, and now says so.** With ~100 of 118
 queries scoring identically between two good configurations, it has far less

@@ -322,3 +322,80 @@
 .relaxed li {
   margin: 0.15rem 0;
 }
+
+/* ---------- stats panel ---------- */
+
+/* Collapsed by default: a diagnostic, not a feature. It sits under the
+   per-search timings because it answers the question those provoke - "is this
+   search typical?" - which one line of numbers cannot. */
+.stats {
+  margin-top: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.stats summary {
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats summary:hover {
+  color: var(--text);
+}
+
+.stats table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats th,
+.stats td {
+  padding: 0.25rem 0.75rem;
+  text-align: right;
+}
+
+.stats th:first-child,
+.stats td:first-child {
+  text-align: left;
+}
+
+.stats thead th {
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.stats tbody tr:last-child td {
+  border-top: 1px solid var(--border);
+  color: var(--text);
+}
+
+/* A withheld p95, styled as a stated reason rather than a missing value.
+   Dotted underline because it carries a title attribute explaining why. */
+.stats-gap {
+  color: var(--warn);
+  border-bottom: 1px dotted var(--warn);
+  cursor: help;
+}
+
+.stats-line {
+  margin: 0;
+  padding: 0.4rem 0.75rem 0;
+}
+
+/* The scope of the numbers above. Deliberately not hidden behind a tooltip:
+   "p95" with no window attached is the easiest figure here to misquote. */
+.stats-scope {
+  margin: 0;
+  padding: 0.5rem 0.75rem 0.6rem;
+  border-top: 1px solid var(--border);
+  margin-top: 0.5rem;
+  line-height: 1.5;
+  opacity: 0.75;
+}

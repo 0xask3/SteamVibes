@@ -77,6 +77,17 @@ export interface SearchResponse {
   embed_ms: number;
   query_ms: number;
 
+  /** null when the relaxation ladder did not run (RELAX_FILTERS off). */
+  relax_ms: number | null;
+
+  /**
+   * null when no cross-encoder ran. A number means it did, INCLUDING when it
+   * failed and search fell back to the SQL ordering - time spent on a dead
+   * model is still time spent, so `reranked` is what says whether it worked.
+   */
+  rerank_ms: number | null;
+  reranked: boolean;
+
   /** null when no chat model ran - i.e. the caller supplied `parsed`. */
   parse_ms: number | null;
 
@@ -138,4 +149,42 @@ export interface ExplainRequest {
 export interface ExplainResponse {
   explanations: VerifiedExplanation[];
   elapsed_ms: number;
+}
+
+/**
+ * One stage's latency over the server's window. See GET /api/stats.
+ *
+ * `p95` is null until the server has `min_p95_samples` requests, because below
+ * that the 95th percentile is literally the maximum and labelling the maximum
+ * "p95" is wrong rather than merely imprecise. Render the gap, never a blank.
+ */
+export interface StageStats {
+  n: number;
+  p50: number;
+  p95: number | null;
+  max: number;
+}
+
+export interface EndpointStats {
+  n: number;
+  /** Keyed by SearchResponse field name. A stage that never ran is ABSENT. */
+  stages: Record<string, StageStats>;
+}
+
+/**
+ * GET /api/stats.
+ *
+ * Read the scope before quoting anything: `window` counts REQUESTS, not time;
+ * the figures cover one server process and reset when it restarts; and they
+ * see API traffic only, so they are not the same measurement as the median
+ * `run_eval` prints.
+ */
+export interface StatsResponse {
+  window: number;
+  uptime_s: number;
+  min_p95_samples: number;
+  search: EndpointStats;
+  explain: EndpointStats;
+  /** Monotonic since server start, not windowed. */
+  fallbacks: Record<string, number>;
 }

@@ -542,6 +542,76 @@ Two categories, and I'll say which one we're in at the top of each session:
   above the results, because a silently widened constraint is worse than a short
   page. Strings in `RelaxationStep.note` are ASCII: the CLI prints them too, and
   a Windows console renders an em dash as a replacement character.
+- `/api/stats` is a ring buffer in `app/metrics.py`, and the numbers it returns
+  are the easiest in this project to quote wrongly - so every one of them ships
+  with its scope attached. It covers the last `STATS_WINDOW` REQUESTS, not a
+  period of time; it is per-process and resets on restart; and it records at the
+  ENDPOINT, so it sees API traffic only and its p50 is NOT the same measurement
+  as the median `run_eval` prints. Recording at the endpoint rather than inside
+  `search()` is the same instinct that keeps `app/games.py` out of
+  `app/search.py`: the ranking path stays undiluted, and the CLI and the eval
+  accumulate a window nobody reads.
+- P95 IS WITHHELD BELOW 21 SAMPLES, AND 21 IS EXACT. With nearest-rank the index
+  is `min(n-1, int(n*0.95))`, which only stops being the last element at n=21 -
+  at n=20 it is `int(19.0) = 19 = n-1`, i.e. the maximum. Reporting the maximum
+  under a p95 label is a WRONG LABEL, not an imprecise number, so it returns
+  null with `n` beside it and the UI renders the reason rather than a blank. The
+  first pass set the constant to 20 and the guard silently did nothing at exactly
+  the boundary it existed to police; it was caught because the check script
+  printed p95 next to max and they were the same value. Assert `p95 < max`, do
+  not reason about it.
+- A STAGE THAT DID NOT RUN IS OMITTED FROM THE RECORD, NEVER ZEROED. `parse_ms`
+  is None on the chip path and `rerank_ms` is None wherever `RANK_METHOD` is not
+  `rerank`, which is every container. A 0.0 would drag that stage's p50 toward
+  nothing and read as a stage that costs nothing. Verified as behaviour: 27
+  requests of which 4 were chip-path give `search.n=27` and `parse_ms.n=23`.
+- NOTHING IS EXCLUDED from the window, including the cold start. One request
+  paying the cross-encoder's first load put 9,283ms in `max` against a 1,048ms
+  p50, and it stays there. Dropping slow requests to make a latency number look
+  better is the failure this project argues against everywhere else; `max` is
+  reported alongside p50 so the tail is visible rather than filtered.
+- `metrics.note()` counts EVENTS, NOT REQUESTS - never divide one by
+  `search.n`. Measured: with a bad `CHAT_MODEL` a single search reported
+  `parse_call_failed: 2`, because `_warm_models()` parses at startup and that
+  call really did fail. Counting it is right - a parser broken at boot should be
+  visible before anyone searches - but the denominator is parser CALLS.
+- The parse fallback is counted in `app/query_parser.py` rather than read off the
+  response, because it is the one degraded path that leaves NO trace: it returns
+  a bare `ParsedQuery`, which is byte-identical to a query that genuinely carried
+  no constraints. It is deliberately NOT a new `ParsedQuery` field - the frontend
+  posts that object straight back on a chip edit, so the flag would then describe
+  a request in which no parse happened, and every field added there has to be
+  checked against `_REQUIRED_FIELDS`, `_llm_schema()`, `has_filters()` and
+  `describe()` (#33). `parse_call_failed` and `parse_bad_output` are split
+  because one is Ollama being unreachable and the other is the model answering
+  unusably - same product outcome, entirely different fix.
+- THE PARSER COSTS MORE THAN THE CROSS-ENCODER, which nothing in this file
+  predicted. Over 50 API searches: parse 1,217ms p50 against rerank's 1,048ms,
+  with embed at 31ms and the SQL at 46ms. The expensive stage is the one nobody
+  thinks of as a ranking stage, and it makes the editable-chip path - which skips
+  parsing entirely - worth more than "14x faster" made it sound. Measure the
+  whole pipeline before optimising the stage that looks expensive.
+- Rerank latency is sensitive to VRAM CONTENTION and a run taken after other GPU
+  work is not a measurement of the reranker. Two `run_eval` runs of identical
+  code, minutes apart: 1,743ms median / 21,284ms p95, then 1,058ms / 1,573ms.
+  The first followed four API restarts that each reloaded the cross-encoder
+  alongside Ollama's resident 6.6GB chat model. Recall was byte-identical across
+  both, which is what said the difference was environmental. Re-run before
+  writing a latency number down, the same way `--parse` results need three runs.
+- `SearchResponse.relax_ms` exists so the relaxation ladder's cost is checkable
+  rather than asserted. Its design note claims 11-24ms per capped count; live
+  traffic puts the whole ladder at 3ms p50, because that range was the worst case
+  across scenarios and most queries stop at their first count. A claim that
+  cannot be checked in production is an assertion.
+- THE API IS SINGLE-USER UNDER LOAD, and item 6 is what produced the number.
+  Thirty concurrent searches took 209 SECONDS EACH against 2.4s served one at a
+  time - the per-request log shows single searches spending 70-148s in parse and
+  62-175s in rerank. One GPU runs Ollama's resident 6.6GB chat model AND the
+  in-process cross-encoder, FastAPI's threadpool accepts every request, and
+  nothing bounds how many pile onto the card. `def` endpoints are still correct
+  (no request blocks the event loop) and do nothing about GPU contention; the
+  fix would be a bounded queue that sheds load, and there isn't one. Do not
+  benchmark this API concurrently and read the result as latency.
 - Commit per feature, not per session.
 - When something breaks, three lines in `NOTES.md`: what broke, what I
   tried, what fixed it.
@@ -563,9 +633,9 @@ measured under the previous embedding model.
 only way a fresh clone can start, because `database_url` is the one setting in
 `config.py` with no default and `.env` is gitignored.
 
-API: `app/main.py` serves `POST /api/search`, `GET /api/game/{app_id}` and
-`GET /api/health` over the same `search()` the CLI uses — no second
-implementation. `SearchRequest` carries an optional `parsed`: when present its
+API: `app/main.py` serves `POST /api/search`, `POST /api/explain`,
+`GET /api/game/{app_id}`, `GET /api/health` and `GET /api/stats` over the same
+`search()` the CLI uses — no second implementation. `SearchRequest` carries an optional `parsed`: when present its
 filters are used verbatim and no chat model runs, which is the editable-chip
 path. Measured 1.347s (parse 1247ms of it) versus 0.095s when the chips supply
 the filters, so re-parsing on a chip edit would be both wrong — it re-derives
@@ -776,6 +846,14 @@ Two-stage baseline, for comparison: `rrf w=0.20` over a 200-candidate pool. reca
 38.9. Query time 44-85ms. `run_eval`'s latency figure includes the embedding
 call, so it is not a query measurement - Ollama swung 94-834ms after a host
 restart and made ranking look 20x slower than it is.
+
+WEEKEND 4 IS DONE. Item 1 reranking, item 4 grounded explanations, item 5 query
+relaxation and item 6 observability are shipped; item 3 (eval in CI) and item 2
+(hybrid sparse+dense) were both dropped by decision, not by failure. Item 2 was
+argued against on evidence rather than effort: it targets proper-noun retrieval,
+which `app/title_lookup.py` already handles by borrowing a named game's tags, and
+its natural beneficiary is `core` - the tier this file documents as unable to
+price anything. Nothing in the repo predicts it would move `tail`.
 
 Still worth carrying: trigram title matching for franchise names with
 ™/edition suffixes (failures.md #21).

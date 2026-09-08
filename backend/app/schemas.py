@@ -177,6 +177,12 @@ class SearchResponse(BaseModel):
     # what the chips must show; this list is the diff that explains it.
     relaxed: list[RelaxationStep] = Field(default_factory=list)
 
+    # None means the ladder never ran - RELAX_FILTERS is off, or run_eval pinned
+    # it off to measure recall against a fixed filter set. A number means it ran,
+    # INCLUDING when it changed nothing, which is the normal case and the one
+    # worth watching: that is the cost relaxation charges every other search.
+    relax_ms: float | None = None
+
     embed_ms: float
     query_ms: float
 
@@ -330,3 +336,58 @@ class ExplainRequest(BaseModel):
 class ExplainResponse(BaseModel):
     explanations: list[VerifiedExplanation] = Field(default_factory=list)
     elapsed_ms: float
+
+
+class StageStats(BaseModel):
+    """One pipeline stage's latency over the window.
+
+    `max` is carried alongside because at small n it is the honest companion to
+    p50 - a single cold search that paid 22s of model load is invisible in a
+    median and obvious here.
+    """
+
+    n: int
+    p50: float
+
+    # None until app/metrics.py has MIN_P95_SAMPLES samples. Below that the
+    # "95th percentile" is literally the maximum, and printing the maximum under
+    # a p95 label is a wrong label rather than an imprecise number.
+    p95: float | None = None
+
+    max: float
+
+
+class EndpointStats(BaseModel):
+    n: int
+
+    # Keyed by the SearchResponse field name (parse_ms, embed_ms, ...). A stage
+    # that never ran is ABSENT rather than zero: rerank_ms is None wherever
+    # RANK_METHOD is not `rerank`, which is every container, and a 0.0 there
+    # would read as a stage that costs nothing.
+    stages: dict[str, StageStats] = Field(default_factory=dict)
+
+
+class StatsResponse(BaseModel):
+    """GET /api/stats.
+
+    The three scope fields are part of the payload rather than only the docs,
+    because these numbers are the easiest in the project to quote wrongly. The
+    window is the last `window` REQUESTS, not a period of time; it covers this
+    process only and resets on restart; and it sees API traffic only, so it is
+    not comparable with the median run_eval prints.
+    """
+
+    window: int
+    uptime_s: float
+
+    # Echoed so a caller can render "p95 needs 20 requests, this has 7" rather
+    # than an unexplained blank.
+    min_p95_samples: int
+
+    search: EndpointStats
+    explain: EndpointStats
+
+    # Monotonic since process start, not windowed. A fallback is rare enough
+    # that the total is more useful than a rate, and a rate over a sliding
+    # window would quietly heal itself.
+    fallbacks: dict[str, int] = Field(default_factory=dict)

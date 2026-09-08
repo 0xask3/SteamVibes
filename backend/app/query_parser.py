@@ -20,6 +20,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db import session_scope
 from app.llm import chat_json
+from app.metrics import note
 from app.models import GameTag
 from app.schemas import ParsedQuery
 from app.title_lookup import apply_reference
@@ -327,6 +328,13 @@ def parse_query(text: str, model: str | None = None) -> ParsedQuery:
         # lookup is pure SQL, so it still applies - "like elden ring" works
         # even with no chat model at all.
         logger.warning("parser call failed for %r, falling back", text, exc_info=True)
+        # Counted, not just logged. A fallback returns a bare ParsedQuery, which
+        # downstream is INDISTINGUISHABLE from a query that genuinely carried no
+        # constraints - so without this /api/stats could not see the one
+        # degraded path in the pipeline that leaves no trace on the response.
+        # Split from the parse failure below because they are different bugs:
+        # this one is Ollama being unreachable or the model missing.
+        note("parse_call_failed")
         return _apply_code_rules(ParsedQuery(semantic_query=text), text)
 
     try:
@@ -337,6 +345,10 @@ def parse_query(text: str, model: str | None = None) -> ParsedQuery:
         logger.warning(
             "parser returned unusable output for %r: %r", text, raw, exc_info=True
         )
+        # The model answered and the answer did not validate - a prompt or model
+        # problem, where the one above is an infrastructure problem. Same
+        # product outcome, entirely different fix.
+        note("parse_bad_output")
         return _apply_code_rules(ParsedQuery(semantic_query=text), text)
 
     # The model was told to copy tags exactly. It will not always.

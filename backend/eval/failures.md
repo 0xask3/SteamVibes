@@ -2041,3 +2041,55 @@ report the relaxation as retrieval quality. The no-parse path would never
 trigger it - no filters means all 55,120 rows pass - but `--parse` would, and a
 number that only sometimes includes a second mechanism is the worst kind.
 Confirmed unchanged at 68.8 / 27.2 / 88.6 / 77.3.
+
+---
+
+### 40. A p95 guard that permitted exactly what it forbade (2026-09-08)
+
+**Item 6 is observability, and the deliverable is not the dashboard - it is that
+the numbers on it cannot be quoted wrongly.** `/api/stats` reports p50 and p95
+per pipeline stage over a ring buffer of the last 500 requests. The obvious risk
+with a hand-run panel is small n: with 9 requests behind it, "p95" is a
+confident-looking label on a value that has no right to it.
+
+So p95 is withheld below a threshold. I set the threshold to 20 by eye and wrote
+a check script that asserted p95 was non-null once past it. That assertion
+passed. What it printed did not:
+
+```
+n=20      p50=110.0 p95=119.0 max=119.0  (p95 appears)
+```
+
+p95 and max are the same number. At n=20 the guard was returning the maximum
+under a p95 label - the precise thing it existed to prevent - and the assertion
+never noticed because it only checked for non-null.
+
+**Mechanism.** Nearest-rank, the same expression `run_eval` uses, is
+`ordered[min(n - 1, int(n * 0.95))]`. That index equals `n - 1` for every n up
+to 20, because `int(20 * 0.95) = int(19.0) = 19 = n - 1`. The first n at which
+p95 stops being the maximum is **21**. Enumerated rather than reasoned about:
+
+```
+n=  19  p95 index= 18  last index= 18  == MAX
+n=  20  p95 index= 19  last index= 19  == MAX
+n=  21  p95 index= 19  last index= 20  ok
+```
+
+**Fixed** by `MIN_P95_SAMPLES = 21` and two assertions that make the property
+structural rather than incidental: `p95 < max` at the threshold, and a derived
+check that recomputes the boundary from the formula and requires the constant to
+match it. If the percentile method ever changes, the second one fails.
+
+**What to take from this.** This is #38's lesson arriving in a new place: a
+guard that has never been *shown* to fire is not known to work, and the way to
+show it is to print the evidence beside the thing it is supposed to differ from.
+Asserting "p95 is not null" tested that the code ran. Printing p95 next to max
+tested what it meant. The gap between those two is where the bug lived, and it
+was one column of output wide.
+
+A second, smaller version of the same thing in the same session: `note()` counts
+events, and with a deliberately broken `CHAT_MODEL` a single search reported
+`parse_call_failed: 2`. Both were real - `_warm_models()` parses at startup and
+that call failed too - but the count is of parser CALLS, not requests, so
+dividing it by `search.n` would give a rate above 100%. Counting the startup
+failure is right; presenting it next to a request count without saying so is not.

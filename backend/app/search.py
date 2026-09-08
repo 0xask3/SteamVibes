@@ -277,10 +277,16 @@ def search(
     # which is what the response reports and what the chips must show.
     should_relax = settings.relax_filters if relax_filters is None else relax_filters
     relaxed_steps: list[RelaxationStep] = []
+    relax_ms: float | None = None
     if should_relax:
+        # Timed like every other stage. Its cost is a claim this project has
+        # made in writing - one capped count per rung, 11-24ms - and a claim
+        # that cannot be checked in production is an assertion.
+        relax_start = time.perf_counter()
         parsed, relaxed_steps = relax(
             parsed, limit, base_threshold, target=settings.relax_target_rows
         )
+        relax_ms = (time.perf_counter() - relax_start) * 1000
 
     effective_threshold = max(base_threshold, parsed.min_reviews or 0)
     unknown = _unknown_tags(parsed.required_tags + parsed.excluded_tags)
@@ -399,6 +405,7 @@ def search(
         returned=len(results),
         threshold=effective_threshold,
         relaxed=relaxed_steps,
+        relax_ms=relax_ms,
         embed_ms=embed_ms,
         query_ms=query_ms,
         rerank_ms=rerank_ms,

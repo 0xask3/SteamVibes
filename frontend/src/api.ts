@@ -11,6 +11,7 @@ import type {
   ExplainResponse,
   SearchRequest,
   SearchResponse,
+  StatsResponse,
 } from "./types";
 
 // 127.0.0.1, not localhost: on Windows localhost resolves to IPv6 ::1 first
@@ -59,6 +60,24 @@ export async function explain(request: ExplainRequest): Promise<ExplainResponse 
     });
     if (!response.ok) return null;
     return (await response.json()) as ExplainResponse;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Server-side latency percentiles, for the diagnostics panel.
+ *
+ * Never throws, for the same reason explain() does not: this decorates a result
+ * list that is already correct, and a stats endpoint that took the page down
+ * would be worse than no stats endpoint. An in-memory read on the server, so
+ * calling it after each search costs nothing worth optimising.
+ */
+export async function stats(): Promise<StatsResponse | null> {
+  try {
+    const response = await fetch(`${API_URL}/api/stats`);
+    if (!response.ok) return null;
+    return (await response.json()) as StatsResponse;
   } catch {
     return null;
   }

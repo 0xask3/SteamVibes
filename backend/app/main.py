@@ -28,6 +28,7 @@ from app.db import session_scope
 from app.embedding import embed_query
 from app.explain import explain
 from app.games import get_game
+from app.metrics import note, record, snapshot
 from app.query_parser import parse_query
 from app.schemas import (
     ExplainRequest,
@@ -35,6 +36,7 @@ from app.schemas import (
     GameDetail,
     SearchRequest,
     SearchResponse,
+    StatsResponse,
 )
 from app.search import search
 
@@ -122,6 +124,8 @@ def search_endpoint(request: SearchRequest) -> SearchResponse:
     editable-chip path, and re-parsing there would re-derive whichever chip the
     user just deleted.
     """
+    started = time.perf_counter()
+
     if request.parsed is not None:
         parsed = request.parsed
         parse_ms: float | None = None
@@ -144,15 +148,77 @@ def search_endpoint(request: SearchRequest) -> SearchResponse:
         # there is nothing to rank. Report it as a dependency failure rather
         # than a traceback.
         logger.exception("embedding request failed for %r", parsed.semantic_query)
+        # Counted, because a 503 records no timings and would otherwise leave
+        # /api/stats looking healthy while every search failed. These are the
+        # only counters not read off a response - there is no response.
+        note("search_failed_embedding")
         raise HTTPException(
             status_code=503, detail="Embedding service unavailable."
         ) from exc
     except SQLAlchemyError as exc:
         logger.exception("search query failed for %r", parsed.semantic_query)
+        note("search_failed_database")
         raise HTTPException(status_code=503, detail="Database unavailable.") from exc
 
     response.parse_ms = parse_ms
+    _record_search(response, started)
     return response
+
+
+def _record_search(response: SearchResponse, started: float) -> None:
+    """One log line and one metrics record per search.
+
+    Deliberately at the ENDPOINT rather than inside search(), which keeps the
+    ranking path undiluted - the same reason app/games.py is not part of
+    app/search.py. The honest cost is that the CLI and run_eval record nothing,
+    so /api/stats describes API traffic only and is not comparable with the
+    median run_eval prints.
+
+    A stage that did not run is OMITTED, never zeroed. parse_ms is None on the
+    chip path and rerank_ms is None wherever RANK_METHOD is not `rerank`;
+    recording either as 0.0 would drag that stage's p50 toward nothing and read
+    as a stage that costs nothing.
+    """
+    total_ms = (time.perf_counter() - started) * 1000
+    timings = {"total_ms": total_ms}
+    for stage in ("parse_ms", "relax_ms", "embed_ms", "query_ms", "rerank_ms"):
+        value = getattr(response, stage)
+        if value is not None:
+            timings[stage] = value
+    record("search", timings)
+
+    # The counters below are read off the response rather than raised at the
+    # point of failure, because every one of these already travels on it.
+    # `parse_call_failed` and `parse_bad_output` are the exceptions and are
+    # counted inside app/query_parser.py - a parse fallback returns a bare
+    # ParsedQuery and leaves no other trace.
+    #
+    # rerank_ms set with reranked False means the cross-encoder was ASKED and
+    # failed, which is failures.md #36: the search still returns the SQL
+    # ordering while every label on it says `rerank`.
+    if response.rerank_ms is not None and not response.reranked:
+        note("rerank_fell_back")
+    if response.relaxed:
+        note("relaxed")
+    if response.under_delivered:
+        note("under_delivered")
+
+    # There was no per-request log line at all before this. At INFO, one line,
+    # every stage - so a slow search can be attributed from the server log
+    # without reproducing it.
+    logger.info(
+        "search %r -> %d results in %.0fms (parse %s, relax %s, embed %.0f, "
+        "query %.0f, rerank %s)%s",
+        response.parsed.semantic_query,
+        response.returned,
+        total_ms,
+        "-" if response.parse_ms is None else f"{response.parse_ms:.0f}",
+        "-" if response.relax_ms is None else f"{response.relax_ms:.0f}",
+        response.embed_ms,
+        response.query_ms,
+        "-" if response.rerank_ms is None else f"{response.rerank_ms:.0f}",
+        " RELAXED" if response.relaxed else "",
+    )
 
 
 @app.post("/api/explain")
@@ -175,7 +241,43 @@ def explain_endpoint(request: ExplainRequest) -> ExplainResponse:
     explanations, elapsed_ms = explain(
         request.query, request.app_ids, wanted_tags=request.wanted_tags
     )
+
+    record("explain", {"total_ms": elapsed_ms})
+    # The discard rate is this feature's deliverable, so it is the one number
+    # here worth counting rather than timing. Counted per EXPLANATION, not per
+    # request - a request asking about ten games and failing one is not a failed
+    # request, and rounding it to one would overstate the rate tenfold.
+    ungrounded = sum(1 for item in explanations if not item.grounded)
+    if ungrounded:
+        note("explanations_ungrounded", ungrounded)
+    note("explanations_total", len(explanations))
+
+    logger.info(
+        "explain %d games in %.0fms (%d ungrounded)",
+        len(request.app_ids),
+        elapsed_ms,
+        ungrounded,
+    )
     return ExplainResponse(explanations=explanations, elapsed_ms=elapsed_ms)
+
+
+@app.get("/api/stats")
+def stats_endpoint() -> StatsResponse:
+    """Latency percentiles and fallback counts for this process.
+
+    Read the scope fields in the body before quoting anything from it. `window`
+    is a count of REQUESTS, not a period of time; the numbers cover this process
+    only and reset on restart; and they see API traffic only, so they are not
+    the same measurement as the median run_eval prints.
+
+    p95 is null until `min_p95_samples` requests have been recorded, because
+    below that the 95th percentile IS the maximum and printing the maximum
+    under a p95 label is a wrong label rather than an imprecise number.
+
+    An in-memory read behind a lock held only for the copy, so the UI can call
+    it after every search without competing with searches.
+    """
+    return snapshot()
 
 
 @app.get("/api/game/{app_id}")

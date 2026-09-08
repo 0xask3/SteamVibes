@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 
-import { explain, search } from "./api";
+import { explain, search, stats } from "./api";
 import { chipsFor } from "./chips";
 import { ResultCard } from "./ResultCard";
+import { StatsPanel } from "./StatsPanel";
 import type {
   ParsedQuery,
   SearchResponse,
+  StatsResponse,
   VerifiedExplanation,
 } from "./types";
 import "./App.css";
@@ -26,6 +28,10 @@ export default function App() {
   // Keyed by app_id and filled in AFTER results render. A second request, so
   // the list is not held back by an LLM call for text nobody has scrolled to.
   const [why, setWhy] = useState<Record<number, VerifiedExplanation>>({});
+  // Server-side percentiles for the diagnostics panel. Refreshed after each
+  // search rather than polled: the interesting moment is right after a request
+  // lands, and an in-memory read on a timer would be motion for its own sake.
+  const [serverStats, setServerStats] = useState<StatsResponse | null>(null);
 
   /**
    * A warm search is ~0.8s. A cold one is ~22s, because Ollama has to page
@@ -64,10 +70,16 @@ export default function App() {
           app_ids: result.results.map((r) => r.app_id),
           wanted_tags: result.parsed.required_tags,
         }).then((payload) => {
+          // Refreshed again here, not only after the search: the explanation
+          // request is what populates the explain row, and it finishes last.
+          void stats().then(setServerStats);
           if (!payload) return;
           setWhy(Object.fromEntries(payload.explanations.map((e) => [e.app_id, e])));
         });
       }
+      // Never awaited and never able to fail the search - stats() swallows its
+      // own errors, exactly like explain().
+      void stats().then(setServerStats);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -210,10 +222,20 @@ export default function App() {
           <footer className="timings">
             {response.returned} results · embed {response.embed_ms.toFixed(0)}ms ·
             query {response.query_ms.toFixed(0)}ms ·{" "}
+            {/* The cross-encoder is the expensive stage and the one whose trade
+                has to be arguable, so it is named here rather than only in the
+                panel. `reranked` false with a time set means it was asked and
+                failed - that must not read as a successful rerank. */}
+            {response.rerank_ms !== null &&
+              (response.reranked
+                ? `rerank ${response.rerank_ms.toFixed(0)}ms · `
+                : `rerank failed after ${response.rerank_ms.toFixed(0)}ms · `)}
             {response.parse_ms === null
               ? "no parse (filters supplied)"
               : `parse ${response.parse_ms.toFixed(0)}ms`}
           </footer>
+
+          {serverStats && <StatsPanel stats={serverStats} />}
         </>
       )}
     </div>
