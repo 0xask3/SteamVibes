@@ -19,8 +19,6 @@ dependencies = [
     # Used directly by eval/run_eval.py, so declared rather than relied on as a
     # transitive dependency of uvicorn[standard].
     "pyyaml>=6.0",
-    "sentence-transformers>=6.0.1",
-    "torch>=2.9.1",
 ]
 
 [dependency-groups]
@@ -30,6 +28,27 @@ dev = [
     "types-tqdm>=4.67",
     "types-PyYAML>=6.0",
 ]
+# The cross-encoder, and a group rather than a main dependency for the sake of
+# the CONTAINER. On Linux these two pull ~2.9GB of wheels - torch, triton and a
+# dozen nvidia-* CUDA libraries - and the backend image can use none of it:
+# docker-compose pins RANK_METHOD=rrf because the GPU is unreachable from a
+# container under Docker Desktop's WSL2 backend (NOTES.md 2026-09-07). While
+# these sat in `dependencies`, `uv sync --no-dev` installed them anyway, so
+# `docker compose up` spent most of its first build downloading them, and five
+# comments across the repo claimed "torch is not in the image" when it was.
+#
+# In default-groups below, so NOTHING changes on the host: `uv run` and
+# `uv sync` still install them and run_eval still reranks out of the box. Only
+# the Dockerfile opts out, with --no-default-groups. app/rerank.py imports
+# sentence_transformers lazily inside _load(), so a process without it degrades
+# to the SQL ordering with a WARNING rather than failing at import.
+rerank = [
+    "sentence-transformers>=6.0.1",
+    "torch>=2.9.1",
+]
+
+[tool.uv]
+default-groups = ["dev", "rerank"]
 
 [tool.ruff]
 line-length = 88

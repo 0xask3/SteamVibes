@@ -24,12 +24,15 @@ instead of 22 minutes. Python itself is uv's problem; it fetches 3.14.
 
 **Linux or Windows, x86_64 or aarch64.** `pyproject.toml` binds torch to
 PyTorch's CUDA index (see the trap at the end of this section), and that index
-publishes no macOS wheels — so on a Mac `uv sync` fails to resolve torch and the
-backend will not install at all, even though the app itself would run fine
-without it at `RANK_METHOD=rrf`. Moving torch and sentence-transformers into an
-optional dependency group would fix that; it is not done because it would make
-the default `run_eval` refuse to report until you installed the extra, and the
-numbers below are the point of the project.
+publishes no macOS wheels. torch and sentence-transformers live in a `rerank`
+dependency group that uv installs by default, so on a Mac a plain `uv sync`
+fails to resolve them. Not supported or tested there.
+
+That group exists for the container, not for platforms: the backend image is
+built with `--no-default-groups`, so it leaves out torch and ~2.9GB of CUDA
+wheels it could never use — Compose pins it to `RANK_METHOD=rrf` because the GPU
+is unreachable from inside a container. On the host nothing is different:
+`uv run` installs the group and `run_eval` reranks out of the box.
 
 ### 1. Get the data
 

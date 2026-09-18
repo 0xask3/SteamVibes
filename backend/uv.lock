@@ -1316,9 +1316,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
-    { name = "sentence-transformers" },
     { name = "sqlalchemy" },
-    { name = "torch" },
     { name = "tqdm" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1329,6 +1327,10 @@ dev = [
     { name = "ruff" },
     { name = "types-pyyaml" },
     { name = "types-tqdm" },
+]
+rerank = [
+    { name = "sentence-transformers" },
+    { name = "torch" },
 ]
 
 [package.metadata]
@@ -1341,9 +1343,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pydantic-settings", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "sentence-transformers", specifier = ">=6.0.1" },
     { name = "sqlalchemy", specifier = ">=2.0.36" },
-    { name = "torch", specifier = ">=2.9.1", index = "https://download.pytorch.org/whl/cu130" },
     { name = "tqdm", specifier = ">=4.67" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
@@ -1354,6 +1354,10 @@ dev = [
     { name = "ruff", specifier = ">=0.8" },
     { name = "types-pyyaml", specifier = ">=6.0" },
     { name = "types-tqdm", specifier = ">=4.67" },
+]
+rerank = [
+    { name = "sentence-transformers", specifier = ">=6.0.1" },
+    { name = "torch", specifier = ">=2.9.1", index = "https://download.pytorch.org/whl/cu130" },
 ]
 
 [[package]]
