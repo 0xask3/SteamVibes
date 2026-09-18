@@ -4,6 +4,48 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-18 - The documented setup path ended in a SystemExit
+
+**What broke.** README step 2 is `docker compose up -d`, whose backend container
+runs `alembic upgrade head`. The last migration, 0007, BUILDS the HNSW index -
+so a brand-new empty database arrives with `ix_games_embedding_hnsw` already
+present. README step 3 then runs `embed_all`, whose very first call is
+`check_hnsw_absent()`, which exits 1:
+
+    ix_games_embedding_hnsw exists. Writing 130k vectors with it in place
+    rebuilds the graph row by row.
+
+The guard is right. The documented happy path was wrong, and had been since the
+compose services were added - every new clone would have failed at the last
+step. CLAUDE.md's one-line ingest summary omitted the same two commands, while
+ingest/README.md (the refresh guide) had them all along.
+
+**What I tried.** Proved it rather than read it: cloned the repo to a temp dir,
+brought up an isolated Postgres on 5433 under a separate compose project,
+confirmed 0 tables, ran `alembic upgrade head`, and confirmed the index exists
+on an empty database. Then ran the corrected sequence end to end against that
+same fresh database - downgrade 0006, load_games (3m08s, 138,964 games and the
+exact documented row counts), embed_all --limit 500 (ran, where it had refused),
+upgrade head (index back, revision 0007).
+
+**What fixed it.** The two alembic lines are now in README step 3 with the
+refusal quoted and the reason given, plus the "stop at 0006, never lower"
+warning. CLAUDE.md's summary now carries them too.
+
+**And a mistake of my own, worth more than the bug.** While testing I wrote
+`cd backend && export DATABASE_URL=...` from a directory that was already
+`backend`. The `cd` failed, `&&` short-circuited, the export never ran - and the
+`alembic downgrade 0006` that followed hit the REAL database on 5432 instead of
+the test one on 5433. It dropped the production HNSW index. Recovered fully with
+`alembic upgrade head` (1020MB, revision 0007, all 130,651 arctic vectors
+intact) because 0007's downgrade only drops an index; one revision lower and it
+would have destroyed the corpus. CLAUDE.md already warned that a chained
+`cd backend && ...` silently skipped a config edit once before. Same trap, worse
+blast radius. Set the variable on its own line, and verify which database you
+are pointed at before running a downgrade.
+
+---
+
 ## 2026-09-08 - The refresh guide told you to delete every embedding
 
 **What broke.** Nothing yet, which is the point - this was found by a cleanup

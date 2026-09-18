@@ -68,8 +68,12 @@ Two categories, and I'll say which one we're in at the top of each session:
 - `cd frontend && npx tsc --noEmit && npm run lint` - typecheck and oxlint.
   Both are clean; oxlint is easy to forget because nothing in CI runs it.
 - Refreshing `data/games.json`: follow `backend/ingest/README.md`. In short —
-  `alembic upgrade head`, `load_games --reload`, `embed_all`, then the two
-  SQL checks. `--reload` is required or existing games are skipped.
+  `alembic upgrade head`, `alembic downgrade 0006`, `load_games --reload`,
+  `embed_all`, `alembic upgrade head`, then the two SQL checks. `--reload` is
+  required or existing games are skipped, and the `downgrade 0006` is required
+  or `embed_all` refuses to start at all — this summary omitted it and so did
+  README's first-time setup, which meant the documented path for a new clone
+  ended in a SystemExit. Never go below 0006; that discards every vector.
 
 ## Conventions
 - Embedded text per game is `{name}. {short_description} Tags: {top 15 tags

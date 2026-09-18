@@ -69,14 +69,36 @@ This runs on the host, and it is the slow step — about 25 minutes on an RTX
 
 ```bash
 cd backend
+uv run alembic downgrade 0006             # drop the vector index first
 uv run python -m ingest.load_games        # ~3 min   -> 138,964 games
 uv run python -m ingest.embed_all         # ~22 min  -> 130,651 vectors
+uv run alembic upgrade head               # rebuild it, now the writing is done
 ```
 
-Both are idempotent and resumable; interrupt either and re-run it. To watch the
-embed job from another terminal, `./backend/ingest/watch_embed.sh` polls the
-database rather than the job's own output, which is buffered and invisible when
-the run is backgrounded.
+**The two `alembic` lines are not optional.** Step 2 applied every migration,
+and the last one builds the HNSW index — so a fresh database arrives with an
+empty 1024-dimension index already in place, and `embed_all` refuses to start
+while it exists:
+
+```text
+ix_games_embedding_hnsw exists. Writing 130k vectors with it in place
+rebuilds the graph row by row.
+```
+
+That refusal is correct. Every row written needs a new entry in the graph, and
+HNSW insertion is deliberately expensive, so building the index after the bulk
+write rather than during it is the difference between seconds and many minutes.
+It is the same rule migrations `0004` and `0006` follow internally.
+
+**Stop at `0006`, never lower.** `downgrade 0006` runs only `0007`'s downgrade,
+which drops the index and leaves the column alone. Going below it runs `0006`'s
+downgrade, which re-dimensions `games.embedding` back to 768 with
+`USING NULL::vector(768)` and discards every vector you just paid for.
+
+Both ingest steps are idempotent and resumable; interrupt either and re-run it.
+To watch the embed job from another terminal, `./backend/ingest/watch_embed.sh`
+polls the database rather than the job's own output, which is buffered and
+invisible when the run is backgrounded.
 
 That is the whole setup. Search should now return results at
 <http://127.0.0.1:5173>.
