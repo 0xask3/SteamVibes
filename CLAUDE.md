@@ -522,7 +522,12 @@ Two categories, and I'll say which one we're in at the top of each session:
   list for a sentence nobody has scrolled to. Results render, explanations
   arrive after, and the frontend swallows their failure entirely - the list is
   correct and useful without them. Same instinct as the chip path staying
-  model-free.
+  model-free. Its `query` MUST be `parsed.semantic_query`, never the typed text -
+  the #34 rule one stage further down. The model is shown tags but no platforms
+  or prices, so "...on linux" made it deny Linux for 15 of 15 Linux games, all
+  passing verification (Linux is not a tag); the stripped query gave 0 of 15.
+  The UI has always sent the right one; a fresh-clone check that called the API
+  with the raw query did not, and reported the result as a product bug.
 - `Explanation`'s field order is load-bearing for the same reason
   `semantic_query` must be last in `ParsedQuery`: `cited_tags` is declared
   BEFORE `why`, so the model commits to a tag list and then writes prose

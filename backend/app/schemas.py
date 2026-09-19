@@ -306,6 +306,14 @@ class ExplainRequest(BaseModel):
     model against client-supplied tags proves nothing at all.
     """
 
+    # The SEMANTIC remainder - `parsed.semantic_query` from the search response -
+    # never the text the user typed. The model sees tags and a blurb but no
+    # platform, price, year or age, so a constraint left in the query reads as a
+    # mismatch it is told to report: the raw "...under 20 dollars on linux" got
+    # "does not run on Linux" for 15 of 15 explanations, all of them Linux games,
+    # and every one passed verification because Linux is not a tag. The stripped
+    # query got 0 of 15. SQL already guarantees the filters; do not re-litigate
+    # them here.
     query: str
     app_ids: list[int] = Field(min_length=1, max_length=20)
 

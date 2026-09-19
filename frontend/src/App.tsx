@@ -69,6 +69,9 @@ export default function App() {
         // Deliberately not awaited into the loading state: results are already
         // on screen and useful. explain() swallows its own failures.
         void explain({
+          // semantic_query, NOT the typed query: given "on linux" the model
+          // cannot see platforms and denies Linux for every result. See
+          // ExplainRequest in backend/app/schemas.py.
           query: result.parsed.semantic_query,
           app_ids: result.results.map((r) => r.app_id),
           wanted_tags: result.parsed.required_tags,
