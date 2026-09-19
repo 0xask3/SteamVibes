@@ -21,7 +21,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 # source, so editing app/search.py does not reinstall SQLAlchemy.
 COPY pyproject.toml uv.lock ./
 # --no-default-groups, not --no-dev: it also leaves out the `rerank` group, which
-# is torch, triton and ~2.9GB of nvidia-* CUDA wheels this container cannot use -
+# is 3.0GB of torch, triton and nvidia-* CUDA wheels this container cannot use -
 # compose pins RANK_METHOD=rrf because the GPU is unreachable from inside it.
 # Before this, --no-dev installed all of it and most of the first build was
 # spent downloading it. See the comment on the group in pyproject.toml.

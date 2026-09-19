@@ -29,7 +29,7 @@ dependency group that uv installs by default, so on a Mac a plain `uv sync`
 fails to resolve them. Not supported or tested there.
 
 That group exists for the container, not for platforms: the backend image is
-built with `--no-default-groups`, so it leaves out torch and ~2.9GB of CUDA
+built with `--no-default-groups`, so it leaves out 3.0 GB of torch and CUDA
 wheels it could never use — Compose pins it to `RANK_METHOD=rrf` because the GPU
 is unreachable from inside a container. On the host nothing is different:
 `uv run` installs the group and `run_eval` reranks out of the box.
@@ -68,7 +68,12 @@ Compose cannot fill it, because ingest needs both the host GPU and
 ### 3. Load and embed
 
 This runs on the host, and it is the slow step — about 25 minutes on an RTX
-4080 SUPER:
+4080 SUPER, after a one-time download. The first `uv run` builds the Python
+environment from `uv.lock`, fetching Python 3.14 if you don't have it and then
+**2.1 GB of packages on Windows, 3.1 GB on Linux**, where CUDA comes as separate
+`nvidia-*` wheels rather than inside torch. torch and CUDA are nearly all of it.
+So the first command below takes as long as that download does, and every
+`uv run` after it starts in seconds.
 
 ```bash
 cd backend

@@ -29,7 +29,7 @@ dev = [
     "types-PyYAML>=6.0",
 ]
 # The cross-encoder, and a group rather than a main dependency for the sake of
-# the CONTAINER. On Linux these two pull ~2.9GB of wheels - torch, triton and a
+# the CONTAINER. On Linux these two pull 3.0GB of wheels - torch, triton and a
 # dozen nvidia-* CUDA libraries - and the backend image can use none of it:
 # docker-compose pins RANK_METHOD=rrf because the GPU is unreachable from a
 # container under Docker Desktop's WSL2 backend (NOTES.md 2026-09-07). While
