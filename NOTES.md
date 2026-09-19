@@ -4,6 +4,32 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-19 - The container cached the tags of an empty database
+
+**What broke.** A full fresh-clone run of the README found the containerised API
+extracting NO tags after ingest - the headline query came back with price,
+platform and multiplayer but no `required_tags`, where the README promises
+`[Co-op, Survival, Crafting, Base-Building]`. `get_tag_vocabulary()` was an
+`lru_cache`, `docker compose up` starts the API before ingest, and the startup
+warmup parses a query - so it cached `()` for the life of the process. The
+explanation verifier reads the same list for its prose check, so that went blind
+too. Nothing was logged; the response looked like a query with no tag intent.
+
+**What I tried.** Proved the mechanism before touching code: restarting only the
+backend container, with nothing else changed, restored the README's tags
+exactly. Then measured whether the cache was worth keeping at all - the read is
+52ms against a ~1,200ms parse, so yes - and found the narrower version of the
+same bug: 2,000 loaded games already carry 425 of the 452 tags, so a search
+during the 3-minute load would have pinned a list missing 27 tags.
+
+**What fixed it.** An empty vocabulary is never cached and logs a WARNING every
+time it is read; a non-empty one expires after 5 minutes (`VOCABULARY_TTL_S`).
+Verified in one uvicorn process against a scratch database, relaxation off:
+empty -> no tags and the warning; `load_games --limit 2000` with the server still
+running; same query -> exactly `[Co-op, Survival, Crafting, Base-Building]`, no
+restart. On the real database the list is byte-identical to before, so the
+parser prompt did not change.
+
 ## 2026-09-18 - The documented setup path ended in a SystemExit
 
 **What broke.** README step 2 is `docker compose up -d`, whose backend container

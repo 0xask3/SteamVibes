@@ -476,6 +476,16 @@ Two categories, and I'll say which one we're in at the top of each session:
   host GPU anyway. `docker compose up` therefore reaches a working API over an
   EMPTY database, which is the honest tradeoff and is documented in README's
   quickstart rather than papered over.
+- THEREFORE NOTHING READ FROM THE DATABASE MAY BE CACHED FOR THE LIFE OF THE
+  PROCESS. `get_tag_vocabulary()` was an `lru_cache`, and the startup warmup
+  parses a query, so the container cached the tags of an empty database: after
+  ingest it extracted no tags at all and the explanation check could not scan
+  prose, with nothing logged, until the backend was restarted. It now never
+  caches an empty result (and warns each time it reads one) and expires a
+  non-empty one after `VOCABULARY_TTL_S` - a search during `load_games` would
+  otherwise pin a partial list, since 2,000 games already carry 425 of the 452
+  tags. Any new DB-derived cache needs the same two answers: what happens if it
+  is filled before ingest, and what happens if it is filled during it.
 - The explanation layer's deliverable is the DISCARD RATE, not the sentence.
   `app/explain.py` writes one "why this matches" line per result and then checks
   every claim against `games.tags`; anything citing a tag the game lacks is

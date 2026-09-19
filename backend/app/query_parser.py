@@ -12,6 +12,7 @@ Never a bare except, never silence.
 import difflib
 import logging
 import re
+import time
 from functools import lru_cache
 from typing import Any
 
@@ -238,16 +239,52 @@ def _llm_schema() -> dict[str, Any]:
     return schema
 
 
-@lru_cache(maxsize=1)
+# How long a NON-EMPTY vocabulary is trusted before it is read again. The read is
+# 52ms against a ~1,200ms parse, so a refresh every 5 minutes costs nothing
+# measurable, and 5 minutes of staleness sits well inside the ~22-minute embed
+# that follows every load - the vocabulary is complete before the corpus is.
+VOCABULARY_TTL_S = 300.0
+
+_vocabulary: tuple[str, ...] = ()
+_vocabulary_read_at = 0.0
+
+
 def get_tag_vocabulary() -> tuple[str, ...]:
     """Every real tag. All 452 fit in the prompt in ~1,400 tokens.
 
     BUILD_PLAN.md assumed a top-200 subset would be needed. Passing all of them
     removes a failure class: a tag that exists but was never shown to the model.
+
+    Not an lru_cache, and that is a fix. `docker compose up` starts the API
+    BEFORE ingest, and the startup warmup parses a query, so the cache held the
+    tags of an empty database for the life of the process: after ingest the
+    container extracted no tags at all, and the explanation check could not scan
+    prose. Nothing logged it; restarting the backend was the only cure. So an
+    empty result is never cached, and a non-empty one expires - a search during
+    `load_games` would otherwise pin a partial list just as permanently.
+
+    No lock: threads that race past an expiry each run the same idempotent read
+    and store equal tuples. lru_cache did not lock around the call either.
     """
+    global _vocabulary, _vocabulary_read_at
+    now = time.monotonic()
+    if _vocabulary and now - _vocabulary_read_at < VOCABULARY_TTL_S:
+        return _vocabulary
+
     with session_scope() as session:
-        tags = session.scalars(select(GameTag.tag).distinct().order_by(GameTag.tag))
-        return tuple(tags.all())
+        tags = tuple(
+            session.scalars(select(GameTag.tag).distinct().order_by(GameTag.tag)).all()
+        )
+    if not tags:
+        # Degraded, not broken: parsing still returns the scalar filters. But
+        # the response looks exactly like a query with no tag intent, so this
+        # line is the only place the state is visible.
+        logger.warning(
+            "tag vocabulary is empty - no games loaded yet, so the parser "
+            "extracts no tags and the explanation check cannot scan prose"
+        )
+    _vocabulary, _vocabulary_read_at = tags, now
+    return tags
 
 
 def _resolve_tag(candidate: str, vocabulary: tuple[str, ...]) -> str | None:
