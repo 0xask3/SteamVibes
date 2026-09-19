@@ -171,7 +171,7 @@ complaining, and `torch.cuda.is_available()` simply returns `False`.
         SQL filters  |  price / platform / tags / year / age / multiplayer
                      v  130,651 rows -> 622
             stage 1  |  HNSW index, ORDER BY embedding <=> query, LIMIT 200
-                     |  ef_search 200, iterative_scan strict_order
+                     |  ef_search 800, iterative_scan strict_order
                      v
             stage 2  |  reciprocal rank fusion over those 200
                      v    1/(60 + rank_cosine) + 0.20/(60 + rank_reviews)
@@ -243,26 +243,31 @@ to Ollama, and it is the price of keeping the GPU on the host.
 ## Results
 
 118 labelled queries, `recall@10`, at the shipped configuration
-(`snowflake-arctic-embed2`, RRF `w=0.20`, `Qwen3-Reranker-0.6B`, `ef_search=200`,
+(`snowflake-arctic-embed2`, RRF `w=0.20`, `Qwen3-Reranker-0.6B`, `ef_search=800`,
 review threshold 10), against the same system with stage 3 switched off:
 
 | tier | n | 2-stage | + cross-encoder | what it measures |
 | --- | --- | --- | --- | --- |
-| core | 30 | 17.8% | **27.2%** | short genre labels — "city builder", "deckbuilding roguelike" |
+| core | 30 | 16.1% | **27.8%** | short genre labels — "city builder", "deckbuilding roguelike" |
 | specific | 44 | 79.5% | **88.6%** | a detailed description whose one right answer is popular |
-| tail | 44 | 70.5% | **77.3%** | the same, but the right answer has 30–300 reviews |
-| overall | 118 | 60.5% | **68.8%** | |
-| English | 91 | 65.8% | 73.8% | |
-| German | 27 | 42.6% | 51.9% | |
+| tail | 44 | 72.7% | **84.1%** | the same, but the right answer has 30–300 reviews |
+| overall | 118 | 60.9% | **71.5%** | |
+| English | 91 | 66.3% | 76.2% | |
+| German | 27 | 42.6% | 55.6% | |
 
-Reranking is worth **+8.3 points overall, 95% CI [+2.5, +14.5]** by a paired
-bootstrap over queries — see the last section for why the interval is quoted and
-not just the number. It costs latency: median search goes 84ms to 842–872ms, of
-which 791–826ms is the cross-encoder scoring 200 pairs (two runs). That is at a
-batch of 32 pairs; the original 128 cost 1,021ms and, beside the resident chat
-model, filled a 16GB card and pushed p95 past 6 seconds — with rankings the same.
+Reranking is worth **+10.6 points overall, 95% CI [+4.5, +17.2]** by a paired
+bootstrap over queries, 17 wins to 3 (sign test p = 0.003) — see the last
+section for why the interval is quoted and not just the number. It costs
+latency: median search goes 54ms to 865ms, of which 773ms is the cross-encoder
+scoring 200 pairs (p95 920ms). That is at a batch of 32 pairs; the original 128
+cost 1,021ms and, beside the resident chat model, filled a 16GB card and pushed
+p95 past 6 seconds — with the same top-10 sets.
 
-Median reviews of everything returned: 180, with 71% under 1,000. That pair is a
+These numbers replaced an earlier 68.8% on 2026-09-19. That figure was measured
+at `ef_search=200`, where the result depended on which graph a non-deterministic
+index build happened to produce — see *On the numbers above*.
+
+Median reviews of everything returned: 169, with 72% under 1,000. That pair is a
 counter-metric and matters more than the recall column — the reranker did not buy
 its points by deleting the long tail.
 
@@ -279,8 +284,8 @@ excluded:
 | rerank | 1,048ms | 1,816ms | 9,283ms |
 | **total** | **2,397ms** | **3,206ms** | 10,901ms |
 
-Measured at the original reranker batch of 128; at today's 32, `run_eval` puts the
-rerank median at ~810ms rather than 1,048ms.
+Measured at the original reranker batch of 128 and `ef_search` of 200; at today's
+settings `run_eval` puts the rerank median at 773ms rather than 1,048ms.
 
 Two things in that table were not what I expected. **The parser costs more than
 the cross-encoder** — 1,217ms against 1,048ms at p50 — so the expensive stage is
@@ -296,6 +301,9 @@ cross-encoder at startup; a request now pays that only if it arrives while the
 warm-up is still running.) Excluding slow requests to make a
 latency number look better is the failure this whole project is arguing against,
 so nothing is dropped and `n` is reported beside every figure instead.
+
+The three choices below were measured at the old `ef_search=200` and are
+reported as measured then, not re-run.
 
 **Choosing the embedding model.** Three models, same queries, same grid.
 `snowflake-arctic-embed2` beat `qwen3-embedding:0.6b` by 6.7 points overall and
@@ -330,8 +338,8 @@ with transformers 5.x — which is not a quality judgement and is recorded as su
 
 ## What doesn't work
 
-**Short genre labels are still the weakest thing here** — 27.2% against 88.6%
-for detailed descriptions, even after the cross-encoder took that tier up 9.4
+**Short genre labels are still the weakest thing here** — 27.8% against 88.6%
+for detailed descriptions, even after the cross-encoder took that tier up 11.7
 points. Part of the gap is a measurement artifact: for "deckbuilding roguelike"
 the system returns Roguebook and Beneath Oresa, which are correct, unlisted in
 the ground truth, and score zero. Part of it is real. Both are true at once and
@@ -344,7 +352,7 @@ That is the clearest missing feature. It was left out on purpose — it deserves
 its own measurement rather than being bundled into the popularity work and
 credited with its gains.
 
-**Asking in German costs 16.1 points, and that is now measured properly.** Every
+**Asking in German costs 15.2 points, and that is now measured properly.** Every
 earlier EN/DE figure here was confounded: German was 37% `core` queries against
 English's 22%, so part of the gap was tier mix, and the per-tier matrix that
 fixed *that* still compared queries pointing at different games.
@@ -355,15 +363,18 @@ paired query by query:
 
 | | English | German | difference | sign test |
 | --- | --- | --- | --- | --- |
-| **overall, n=91** | 73.8% | 57.7% | **−16.1% [−25.8, −6.8]** | 4W 20L 67T, p = 0.002 |
-| specific, n=35 | 91.4% | 65.7% | −25.7% [−42.9, −8.6] | 1W 10L 24T, p = 0.012 |
-| tail, n=36 | 80.6% | 69.4% | −11.1% [−25.0, +2.8] | 2W 6L 28T, p = 0.289 |
-| core, n=20 | 30.8% | 22.5% | −8.3% [−21.7, +3.3] | 1W 4L 15T, p = 0.375 |
+| **overall, n=91** | 76.2% | 61.0% | **−15.2% [−24.0, −7.0]** | 3W 18L 70T, p = 0.001 |
+| specific, n=35 | 91.4% | 74.3% | −17.1% [−31.4, −2.9] | 1W 7L 27T, p = 0.070 |
+| tail, n=36 | 86.1% | 69.4% | −16.7% [−30.6, −2.8] | 1W 7L 28T, p = 0.070 |
+| core, n=20 | 31.7% | 22.5% | −9.2% [−23.3, +2.5] | 1W 4L 15T, p = 0.375 |
 
-So the overall gap is real, it lands almost entirely on detailed descriptions,
-and the `core` and `tail` gaps are **not** distinguishable from zero. 67 of 91
-queries tie, which is why the paired test matters: the whole result rests on 24
-queries and an unpaired comparison would have buried that.
+So the overall gap is real. By tier, the `specific` and `tail` intervals both
+exclude zero while their sign tests stop at p = 0.070, and the `core` gap is
+**not** distinguishable from zero. At the old `ef_search=200` this table read as
+"almost entirely detailed descriptions", with `tail` crossing zero; that
+per-tier reading did not survive the re-measurement, and the overall one did.
+70 of 91 queries tie, which is why the paired test matters: the whole result
+rests on 21 queries and an unpaired comparison would have buried that.
 
 The cause is that `embed_text` is English, so German queries are matched against
 English descriptions. Swapping to the model sold on multilingual retrieval bought
@@ -373,9 +384,9 @@ English descriptions. Swapping to the model sold on multilingual retrieval bough
 deferred and now retires.** The earlier reading was that reranking moved German
 off a stuck 55.6%; it failed a paired test at n=9, and the stated next step was
 to build a bigger German set. That set now exists, `specific` German went from 9
-queries to 44, and the answer did not change: **+3.8% [−3.0%, +11.0%], 13 wins to
-7, p = 0.263**, with `specific` at +9.1% [−2.3%, +20.5%]. Against +8.3% [+2.5%,
-+14.5%] on the mixed set. Reranking's benefit is established in aggregate and
+queries to 44, and the answer did not change: **+4.7% [−2.5%, +11.9%], 14 wins to
+7, p = 0.189**, with `specific` at +9.1% [−2.3%, +20.5%]. Against +10.6% [+4.5%,
++17.2%] on the mixed set. Reranking's benefit is established in aggregate and
 **not** established for German — at a sample size where that is now informative
 rather than merely underpowered. The next thing to try is a German document
 field, not a better reranker.
@@ -385,7 +396,7 @@ of requests, so they measure *the penalty for asking in German*, not how German
 players actually phrase things.
 
 **The long tail is searched, but only just.** 44 queries target games with
-30–300 reviews and 77.3% come back. Reranking cannot rescue the rest: measuring
+30–300 reviews and 84.1% come back. Reranking cannot rescue the rest: measuring
 every labelled target's exact cosine rank shows **36 of 148 sit outside the
 200-row candidate pool entirely**, so no reordering can reach them, and 75.7%
 overall is the ceiling for any reranker here. Those are retrieval failures, and
@@ -489,9 +500,18 @@ eval is built to resist flattering itself:
   of famous games. This metric uses neither labels nor query authorship, so
   neither bias reaches it.
 - **A measured reproducibility floor.** Two embeds of the same model on the same
-  corpus move `tail` by 2.3 points — one query out of 44. Differences below that
-  are not results. That floor is why the ranking weight was *not* retuned when a
-  finer sweep appeared to justify it.
+  corpus move `tail` by 2.3 points — one query out of 44 — when the corpus was
+  embedded at two different batch settings. Differences below that are not
+  results. That floor is why the ranking weight was *not* retuned when a finer
+  sweep appeared to justify it.
+- **The index build is not allowed to be a variable.** The HNSW index is built
+  in parallel, and a parallel build is not deterministic: at the old
+  `ef_search=200`, five builds of *identical* vectors scored 66.8–68.8%, and
+  this README's first headline was one of those draws. The search now runs at
+  `ef_search=800`, the smallest value at which three independent builds agree on
+  every query of both sets, so the numbers no longer depend on which index a
+  machine happens to build. It also recovered recall, which is reported below as
+  a consequence, not as the reason.
 - **Reproducible is not distinguishable**, and conflating the two produced three
   wrong headlines in a single session. The floor above measures re-running the
   *same* configuration; the uncertainty in a *difference between two* is much

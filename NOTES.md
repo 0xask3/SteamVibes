@@ -4,6 +4,27 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-19 - 68.8% was one draw from a non-deterministic index build
+
+**What broke.** The real database scored 67.1% overall against the README's
+68.8%, with no known change to the recall path. Two English queries had lost
+their target and the German set had gained one.
+
+**What I tried.** Ruled out everything else with a test each: a re-embed of 256
+rows was bit-identical to the stored vectors across the Ollama upgrade; pgvector,
+the libraries and the recall-path code were unchanged; batch size and VRAM
+pressure changed nothing. Then copied the database and rebuilt the index twice
+through migration 0007: 67.9% and 66.8%. The parallel build is not deterministic
+and my accidental rebuild last session had drawn a worse graph. A single-worker
+build is repeatable, but that fixes reproducibility and leaves the recall where
+it was.
+
+**What fixed it.** `HNSW_EF_SEARCH` 200 -> 800, chosen by sweeping 200-1000 over
+three independent builds: 800 is the smallest value where they agree on every
+query of both sets and match 1000. Not 600, which scored 0.3 higher only because
+it was still approximate on one query. EN +4.4% [+1.0, +8.5], `tail` +9.1%, DE
++2.5%; filtered SQL median 16 -> 23ms. failures.md #42 has the whole table.
+
 ## 2026-09-19 - The reranker's batch default filled the card on its own
 
 **What broke.** A fresh-clone `run_eval` only reproduced the README's latency

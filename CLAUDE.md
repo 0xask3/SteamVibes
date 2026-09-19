@@ -418,8 +418,18 @@ Two categories, and I'll say which one we're in at the top of each session:
   log line or a traceback; app/rerank.py copies it into `HF_TOKEN`, which is what
   huggingface_hub actually reads. Unauthenticated Hub downloads are rate limited
   hard enough to stall a 1.2GB model at 9KB, which looks like a hang.
-- `HNSW_EF_SEARCH=200`, not pgvector's default of 40. The default cost 3.3
-  recall points at threshold 10 (15.0% against the exact scan's 18.3%) for 8ms.
+- `HNSW_EF_SEARCH=800`, and the reason is REPRODUCIBILITY before recall. At 200
+  - exactly the 200-row pool, so the pool was approximate - the eval's answer
+  depended on which graph the index build produced, and the parallel build in
+  migration 0007 is not deterministic: five builds of the same vectors gave
+  66.8-68.8% overall, the README's 68.8 among them, and last session's
+  accidental rebuild of the real index silently moved it to 67.1. Swept over
+  three independent builds, 800 is the smallest value where every build agrees
+  on every query of both sets AND every query matches 1000. Do not lower it to
+  600 on its 0.3-point higher score: that was still-approximate search helping
+  one query. It also recovered recall (EN +4.4% [+1.0, +8.5], `tail` +9.1%) for
+  7ms of filtered-SQL median. pgvector's default of 40 is worse still: it cost
+  3.3 points when first measured. See failures.md #42.
 - REPRODUCIBLE IS NOT DISTINGUISHABLE, and confusing the two produced three
   wrong headlines in one session. The floors below measure re-running the SAME
   config; the uncertainty in a DIFFERENCE between two configs is far larger. At
@@ -433,8 +443,15 @@ Two categories, and I'll say which one we're in at the top of each session:
 - Differences below ~2.5 points at n=44, or ~1 point at n=118, are NOT results.
   That is this eval's reproducibility floor, measured rather than guessed: two
   embeds of the same model on the same corpus move `tail` by 2.3 points, one
-  query. Query time and the HNSW build are both byte-deterministic; the vectors
-  are not. Check a difference against the floor before writing it down, and
+  query - a corpus embedded half at one `num_batch` and half at another (#31).
+  This file used to add "query time and the HNSW build are both
+  byte-deterministic; the vectors are not", and two of those three are now
+  measured the other way. Vectors ARE reproducible at a fixed `num_batch`:
+  256 corpus rows re-embedded bit-identical, even across the Ollama 0.33 ->
+  0.34 upgrade. The PARALLEL build is NOT: five builds gave 66.8-68.8% at
+  ef_search 200 (#42). #31's single rebuild check did match on 09-06, and why
+  it held then is not known. Since ef_search 800 the build changes nothing on
+  any of 236 queries. Check a difference against the floor before writing it down, and
   never change embedding batch settings mid-corpus - a corpus embedded two ways
   passes both `verify_corpus_model()` and `verify_corpus_complete()`, because
   one sees a single model name and the other sees no gaps. See failures.md #31.
@@ -657,16 +674,17 @@ Two categories, and I'll say which one we're in at the top of each session:
   (no request blocks the event loop) and do nothing about GPU contention; the
   fix would be a bounded queue that sheds load, and there isn't one. Do not
   benchmark this API concurrently and read the result as latency.
-- THE GERMAN GAP IS REAL AND IT IS 16 POINTS, measured paired for the first time.
+- THE GERMAN GAP IS REAL AND IT IS 15 POINTS, measured paired for the first time.
   `eval/queries_de.yaml` holds the SAME 118 targets and tiers as queries.yaml,
   asked in German, so `run_lang_eval` compares 91 matched pairs where language is
   the ONLY variable - not tier mix, not target choice, both of which confounded
-  every earlier EN/DE number. English 73.8% against German 57.7%, difference
-  -16.1% [-25.8%, -6.8%], 20 losses to 4 wins, p=0.002. It is concentrated in
-  `specific` (-25.7%, p=0.012) and is NOT distinguishable in `core` (-8.3%,
-  p=0.375) or `tail` (-11.1%, p=0.289), so the overall figure is the result and
-  the per-tier attribution holds only for `specific`. 67 of 91 queries tie, so
-  the whole thing rests on 24.
+  every earlier EN/DE number. At ef_search 800: English 76.2% against German
+  61.0%, difference -15.2% [-24.0%, -7.0%], 18 losses to 3 wins, p=0.001. The
+  `specific` (-17.1%) and `tail` (-16.7%) intervals both exclude zero, each with
+  sign test p=0.070; `core` (-9.2%, p=0.375) is not distinguishable. 70 of 91
+  queries tie, so the whole thing rests on 21. At ef_search 200 it read -16.1%,
+  "concentrated in `specific`", with `tail` crossing zero - the overall result
+  survived the re-measurement and that per-tier attribution did not (#42).
 - A SECOND QUERY SET GOES IN A SECOND FILE, never into queries.yaml. Recall is
   comparable across configs on a FIXED set and never across sets - going from 74
   to 118 queries once invalidated every number measured on the old one. Adding
@@ -845,9 +863,9 @@ app_ids are copied rather than retyped. It exists because queries.yaml is frozen
 (adding to it would invalidate every published number) and because a language
 comparison needs the targets held fixed to mean anything. `run_eval --queries`
 selects it, `run_lang_eval` runs the 91 matched pairs against English with a
-sign test and a paired bootstrap. German recall on it is 56.4% overall
-(core 21.7 / specific 68.2 / tail 68.2) at the shipped rerank config, and 52.5%
-at `rrf w=0.20`.
+sign test and a paired bootstrap. German recall on it is 59.7% overall
+(core 21.7 / specific 75.0 / tail 70.5) at the shipped rerank config, and 55.1%
+at `rrf w=0.20` (ef_search 800; 56.4% and 52.5% at 200).
 
 `run_eval` CANNOT referee a parser change, and three in a row had to be justified
 without it (#33, #34, #35). Not one of its 118 queries names a price, a platform,
@@ -928,18 +946,20 @@ that stuck 55.6% to 77.8%; this file said it did not survive a paired test at
 n=9 and was "a reason to BUILD A BIGGER GERMAN SET and nothing more". The bigger
 set exists now - `eval/queries_de.yaml`, the same 118 targets asked in German,
 so `specific` DE went 9 -> 44 - and the answer did not change. Reranking on
-German is +3.8% overall [-3.0%, +11.0%], 13 wins to 7, p=0.263, and `specific`
-DE is +9.1% [-2.3%, +20.5%], p=0.289. Against +8.3% [+2.5%, +14.5%] on the mixed
-118. So the reranker's benefit is established in AGGREGATE and not established
+German is +4.7% overall [-2.5%, +11.9%], 14 wins to 7, p=0.189, and `specific`
+DE is +9.1% [-2.3%, +20.5%], p=0.289. Against +10.6% [+4.5%, +17.2%] on the
+mixed 118 (all at ef_search 800; at 200 German was +3.8%, p=0.263). So the reranker's benefit is established in AGGREGATE and not established
 for German, at a sample size where that is now informative rather than merely
 underpowered. Do not quote the 55.6 -> 77.8 number. failures.md #37 and #41.
 
 Ranking: THREE stages as of Weekend 4 - `rrf w=0.20` over a 200-candidate pool,
 then a `Qwen3-Reranker-0.6B` cross-encoder whose rank replaces the cosine one
 inside that same rrf sum. **The claim this supports is that reranking beats not
-reranking: +8.3% overall [+2.5%, +14.5%] and +9.1% on `specific` [+2.3%, +18.2%],
-paired bootstrap over queries.** 68.8% overall against the two-stage 60.5%,
-1,021ms median. DEFAULT in config.py, overridden back to `rrf` in
+reranking: +10.6% overall [+4.5%, +17.2%], 17 wins to 3, p=0.003, and +9.1% on
+`specific` [+2.3%, +18.2%], paired bootstrap over queries.** 71.5% overall
+against the two-stage 60.9%, 773ms rerank median, at ef_search 800 and batch 32
+since 2026-09-19. It read +8.3% and 68.8 / 60.5 at ef_search 200, where the
+number depended on which graph the index build produced - failures.md #42. DEFAULT in config.py, overridden back to `rrf` in
 docker-compose because the container has neither torch nor the GPU.
 
 The MODEL choice is NOT supported by recall and must not be quoted as if it were.
@@ -981,7 +1001,7 @@ probability looks authoritative in a way a mediocre search result does not.
 The last thing built was the bigger German set that #37 asked for, and it
 returned a negative: see the German paragraph above. What remains open and is
 worth doing next, in order: a German document field in `embed_text` (the German
-gap is 16 points and is now attributed to the English corpus rather than to the
+gap is 15 points and is now attributed to the English corpus rather than to the
 reranker); a bounded queue with load shedding (30 concurrent searches take 209s
 each); trigram title matching for franchise names (#21); and the six tail targets
 that sit outside the 200-row pool, which need a different stage 1.

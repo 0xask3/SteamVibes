@@ -95,12 +95,20 @@ class Settings(BaseSettings):
     # See failures.md #21.
     title_match_min_reviews: int = 50_000
 
-    # pgvector's ef_search default of 40 is too small here: measured recall@10
-    # at threshold 10 was 15.0% against the 18.3% of the exact scan the index
-    # replaced, and 200 recovers that exactly for 45ms -> 53ms. It is also the
-    # pool the reranker draws from, so it is a knob, not a constant.
-    # See NOTES.md 2026-09-04.
-    hnsw_ef_search: int = 200
+    # How hard HNSW searches for the 200-row pool the reranker draws from. It was
+    # 200 - exactly the pool size, so the pool was approximate - and at 200 the
+    # RESULT DEPENDED ON WHICH GRAPH THE INDEX BUILD PRODUCED: migration 0007
+    # builds with parallel workers, which is not deterministic, and five builds of
+    # the same vectors gave 66.8-68.8% overall. Swept over three independent
+    # builds, 800 is the smallest value where every build agrees on every query of
+    # both eval sets AND every query matches 1000, i.e. the pool has stopped
+    # being the variable. 600 scored 0.3 higher only because it was still
+    # approximate on one query; picking it would have been picking by the score.
+    # Against 200 on the real index: EN +4.4% [+1.0, +8.5], tail +9.1%; DE +2.5%.
+    # Filtered SQL cost over 47 labelled cases: median 16 -> 23ms, p95 108 ->
+    # 123ms (1000 would be 35ms at the median). pgvector's own default is 40,
+    # which cost 3.3 points when this was first measured. See failures.md #42.
+    hnsw_ef_search: int = 800
 
     # How many index hits get reranked. Must not exceed hnsw_ef_search: stage 1
     # cannot return more candidates than it was allowed to look at, and coming

@@ -1166,6 +1166,11 @@ identical. That is one query out of 44.
 | drop and rebuild HNSW, same vectors | byte identical | index graph build order |
 | re-embed the same model | `tail` moves 2.3 points | leaves the vectors |
 
+> **2026-09-19:** the middle row does not reproduce. Five parallel builds of the
+> same vectors gave 66.8-68.8% at `ef_search=200`, and a re-embed at a fixed
+> `num_batch` is bit-identical - so today the index moves and the vectors do not.
+> This entry's own cause, the mixed-`num_batch` corpus, still stands. See #42.
+
 So the vectors themselves differ between two embeds of the same model on the
 same corpus, and there is a specific reason rather than general GPU noise: the
 first arctic corpus was embedded in two halves under **different `num_batch`
@@ -2162,3 +2167,69 @@ one-sided test flattering - and its self-test asserts both numbers so the two ca
 never be silently compared. No published claim changes; the split was not
 significant either way.
 
+
+---
+
+### 42. The published recall was one draw from a non-deterministic index build (2026-09-19)
+
+**Found.** A fresh-clone check reported the real database at **67.1%** overall
+against the README's 68.8%: two English queries had lost their target, one
+`specific` and one `tail`, while the German set had gained one. Nothing in the
+recall path had knowingly changed.
+
+**Ruled out, each with a measurement rather than an argument:**
+
+| suspect | test | result |
+| --- | --- | --- |
+| Ollama 0.33 -> 0.34 upgrade (09-15) | re-embed the corpus's first 256 rows exactly as `embed_all` did | bit-identical to the stored vectors |
+| pgvector | image date and extension version | unchanged: 2026-08-13, 0.8.6 |
+| libraries | `uv.lock` diff since the README commit | no torch/transformers/tokenizers change |
+| code | diff of the recall path since the last 68.8 verification | dead-code removal and `--dump` plumbing only |
+| reranker batch size, VRAM pressure | 128 vs 32, contended vs not | identical per query |
+
+**The cause.** Last session I accidentally dropped and rebuilt the real HNSW
+index. Migration 0007 builds it with four parallel workers, and a parallel HNSW
+build is not deterministic. On a copy of the same database, two rebuilds through
+the same migration gave 67.9% and 66.8%; the fresh clone's own build gave 68.5%.
+Five builds of identical vectors, five answers, with up to two queries differing
+between any pair. A single-worker build IS repeatable (two matched on all 118
+queries) but takes 84s instead of 25s and fixes only reproducibility.
+
+**Why it could matter at all: `ef_search` equalled the pool.** At 200 the index
+is asked for exactly the 200 candidates the reranker needs, with no slack, so the
+pool is approximate and which targets fall off its edge depends on the graph.
+Swept over three independent builds:
+
+| overall recall | ef 200 | 400 | 600 | 800 | 1000 |
+| --- | --- | --- | --- | --- | --- |
+| real index | 67.1 | 69.2 | 71.8 | 71.5 | 71.5 |
+| rebuild A | 67.9 | 70.1 | 71.8 | 71.5 | 71.5 |
+| rebuild B | 66.8 | 69.2 | 71.8 | 71.5 | 71.5 |
+| builds identical per query | no | no | yes | yes | yes |
+| queries differing from 1000 | 7 | 4 | 1 | 0 | - |
+
+**800 ships, not 600.** 800 is the smallest value where every build agrees on
+every query AND every query matches 1000 - on the German set too, at 59.7% on
+two builds. 600 scores 0.3 higher, and that is exactly the reason not to take
+it: its one remaining difference from 1000 ("co-op survival crafting with base
+building", 33% against 0%) is approximate search happening to help, and choosing
+a setting because the approximation flattered it is the #26 mistake in a new
+place. Against 200 on the real index: EN +4.4% [+1.0, +8.5], 6 wins to 1,
+p=0.125; `tail` +9.1% [+2.3, +18.2]; DE +2.5% [+0.0, +5.9]. The interval clears
+zero and the sign test does not, so the case is the mechanism - near-exact and
+build-independent - with the recall as support, and it is quoted that way. The
+counter-metric did not move (median reviews 177 -> 169, under 1k 71% -> 72%).
+Cost: filtered SQL median 16 -> 23ms and p95 108 -> 123ms over the 47 labelled
+cases with real filters; 1000 would have been 35ms at the median.
+
+**What this corrects.** CLAUDE.md said "query time and the HNSW build are both
+byte-deterministic; the vectors are not." The vectors are reproducible at a
+fixed `num_batch`, and the build is not. #31's own rebuild check did match on
+09-06 and I do not know why it held then - that is recorded as unknown rather
+than explained. Every headline number was re-measured at 800; the historical
+model, weight and reranker comparisons were taken at 200 and are labelled so.
+
+**What to take from this.** A benchmark number is a function of every
+non-deterministic step that produced its inputs, and an index build is one. The
+two checks that would have caught it are cheap: rebuild twice and diff, and ask
+whether a retrieval parameter sits exactly at the size of the thing it retrieves.
