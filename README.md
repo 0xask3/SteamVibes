@@ -257,8 +257,10 @@ review threshold 10), against the same system with stage 3 switched off:
 
 Reranking is worth **+8.3 points overall, 95% CI [+2.5, +14.5]** by a paired
 bootstrap over queries — see the last section for why the interval is quoted and
-not just the number. It costs latency: median search goes 84ms to 1,106ms, of
-which 1,021ms is the cross-encoder scoring 200 pairs.
+not just the number. It costs latency: median search goes 84ms to 842–872ms, of
+which 791–826ms is the cross-encoder scoring 200 pairs (two runs). That is at a
+batch of 32 pairs; the original 128 cost 1,021ms and, beside the resident chat
+model, filled a 16GB card and pushed p95 past 6 seconds — with rankings the same.
 
 Median reviews of everything returned: 180, with 71% under 1,000. That pair is a
 counter-metric and matters more than the recall column — the reranker did not buy
@@ -276,6 +278,9 @@ excluded:
 | query | 46ms | 234ms | 400ms |
 | rerank | 1,048ms | 1,816ms | 9,283ms |
 | **total** | **2,397ms** | **3,206ms** | 10,901ms |
+
+Measured at the original reranker batch of 128; at today's 32, `run_eval` puts the
+rerank median at ~810ms rather than 1,048ms.
 
 Two things in that table were not what I expected. **The parser costs more than
 the cross-encoder** — 1,217ms against 1,048ms at p50 — so the expensive stage is

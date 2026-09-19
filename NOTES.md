@@ -4,6 +4,29 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-19 - The reranker's batch default filled the card on its own
+
+**What broke.** A fresh-clone `run_eval` only reproduced the README's latency
+after `ollama stop qwen3.5:9b`; with the chat model resident the rerank p95 was
+8-9s instead of 1.4s. `RERANK_BATCH_SIZE=128` was never measured, and its
+comment claimed it sat comfortably beside the chat model and traded VRAM for
+throughput. At 128 one run peaked the whole 16GB card at 15.9GB and spilled.
+
+**What I tried.** Probed 128/64/32/16 on 30 real queries, in both orders, then
+full EN and DE runs at 128 and 32 with the chat model pinned resident for all of
+them. Smaller batches were FASTER, not slower (most likely padding: every batch
+is padded to its longest pair). But 16 moved the top-10 on 13 of 30 queries,
+and a top-10 id comparison over all 236 queries found 32 reordering adjacent
+near-ties inside 4 of them - the probe had said "identical" because it only saw
+30. Each size is deterministic run to run, so it is the fp16 arithmetic of a
+different batch shape, not noise.
+
+**What fixed it.** Default 32. Same top-10 SETS on all 236 queries, so recall is
+identical - `compare_runs` 0 wins, 0 losses, 118 ties on each set. With the chat
+model resident: rerank median 1,033 -> 763ms, p95 6,747 -> 886ms, peak 15.9 ->
+13.4GB, and the EN eval runs in 108s instead of 240. Unloaded: 791-826ms against
+the README's 1,021. The batch is no longer described anywhere as speed-only.
+
 ## 2026-09-19 - The first search after every restart paid for the reranker
 
 **What broke.** On a fresh clone run from source, the first search took 124s,

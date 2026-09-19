@@ -197,11 +197,21 @@ class Settings(BaseSettings):
     rerank_device: str = "cuda"
 
     # Pairs per forward pass. Not a network batch - it is what
-    # sentence-transformers hands the GPU at once, trading VRAM for throughput.
-    # 128 pairs at 512 tokens sits comfortably beside a 6.6GB chat model on
-    # 16GB. Lower this before lowering the pool if VRAM gets tight: the pool
-    # size decides which targets are REACHABLE, this only decides how fast.
-    rerank_batch_size: int = 128
+    # sentence-transformers hands the GPU at once. It was 128, unmeasured, with a
+    # comment claiming it sat comfortably beside the chat model on 16GB and
+    # traded VRAM for throughput. Measured, both were wrong: with qwen3.5:9b
+    # resident, 128 peaked the whole card at 15.9GB and spilled, rerank p95
+    # 6,747ms; 32 peaks at 13.4GB with p95 886ms and a LOWER median (763ms
+    # against 1,033ms), because every batch is padded to its longest pair.
+    #
+    # NOT a free knob. A different batch shape changes the fp16 arithmetic, which
+    # can reorder near-ties. Against 128, over all 236 EN and DE eval queries, 32
+    # kept every top-10 SET - recall identical, 118 ties each in compare_runs -
+    # and reordered adjacent near-ties inside 4 of them (scores ~0.0002 apart;
+    # each size is deterministic run to run). 16 changed the top-10 list on 13
+    # of 30 queries probed. Any other value needs `compare_runs` at 0 wins and 0
+    # losses before it is a speed setting.
+    rerank_batch_size: int = 32
 
     # The task description handed to an INSTRUCTION-FOLLOWING reranker. Ignored
     # by models that do not take one - bge-reranker-v2-m3 scores -0.01 on

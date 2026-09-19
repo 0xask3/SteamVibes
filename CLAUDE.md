@@ -394,9 +394,13 @@ Two categories, and I'll say which one we're in at the top of each session:
   `specific` target a reranker can reach is inside rank 100 and 8 of 9 `tail`
   ones are; 200 -> 500 buys 16 more targets of which 14 are `core`, the tier that
   cannot price this. Reranking is O(pool) latency, so rows past the last
-  recoverable target are latency bought for nothing. If VRAM or latency gets
-  tight, lower `RERANK_BATCH_SIZE` first - the pool decides which targets are
-  REACHABLE, the batch only decides how fast.
+  recoverable target are latency bought for nothing. The pool decides which
+  targets are REACHABLE; `RERANK_BATCH_SIZE` is mostly speed and VRAM but NOT
+  only that, and this file used to say it was. A different batch shape changes
+  the fp16 arithmetic: 16 moved the top-10 on 13 of 30 queries, and even 32
+  reordered adjacent near-ties inside 4 of 236 top-10s against 128 (same SETS,
+  so recall identical - 118 ties each in `compare_runs`). Change it only with a
+  `compare_runs` at 0 wins and 0 losses.
 - A reranker's numbers mean nothing until you have checked it can actually
   discriminate, not merely rank. `Qwen3-Reranker-0.6B` scored 8.1% overall, which
   was an invocation bug and not its quality: the seq-cls conversion still needs
@@ -635,6 +639,10 @@ Two categories, and I'll say which one we're in at the top of each session:
   alongside Ollama's resident 6.6GB chat model. Recall was byte-identical across
   both, which is what said the difference was environmental. Re-run before
   writing a latency number down, the same way `--parse` results need three runs.
+  Much of that contention was the reranker's OWN batch default: at 128 it filled
+  the whole 16GB card beside the resident chat model and spilled (rerank p95
+  6,747ms); at 32, the default since, the same run peaks at 13.4GB with p95
+  886ms and a lower median. A fresh-clone check found it, not an eval.
 - `SearchResponse.relax_ms` exists so the relaxation ladder's cost is checkable
   rather than asserted. Its design note claims 11-24ms per capped count; live
   traffic puts the whole ladder at 3ms p50, because that range was the worst case
