@@ -4,6 +4,29 @@ What broke, what I tried, what fixed it. Newest first.
 
 ---
 
+## 2026-09-19 - The first search after every restart paid for the reranker
+
+**What broke.** On a fresh clone run from source, the first search took 124s,
+122s of it in "reranking", while the UI promised about 20. The cross-encoder
+loads lazily on first use, and on a new machine that includes a 2.4GB download
+(`model.safetensors` is fp32; 1.2GB is its size in VRAM, which is where the
+figure in my first report came from). Even with the model cached, every restart
+made its first search pay 8,822ms of load plus full-shape warm-up - 10.9s
+against 2.1s for the next one.
+
+**What I tried.** Looked for why `_warm_models()`, which exists precisely to
+keep cold loads off the first user, did not cover this. It warms the embedder
+and the chat model and was written before the reranker existed.
+
+**What fixed it.** `_warm_models()` warms the cross-encoder too, through the
+same `rerank_scores()` a search uses, only under `RANK_METHOD=rerank` and in its
+own try so an Ollama failure cannot skip it. Measured: `cross-encoder warm in
+8.2s` at boot, first search 2.5s. With an empty Hub cache the health check still
+answers in 4ms during the download, and a search sent mid-download waits on the
+loader's lock and returns reranked - one load, not two. Inside the real backend
+image, rrf never imports torch, and a misconfigured `rerank` logs a warning
+instead of crashing.
+
 ## 2026-09-19 - The container cached the tags of an empty database
 
 **What broke.** A full fresh-clone run of the README found the containerised API

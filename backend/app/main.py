@@ -30,6 +30,7 @@ from app.explain import explain
 from app.games import get_game
 from app.metrics import note, record, snapshot
 from app.query_parser import parse_query
+from app.rerank import RerankUnavailable, rerank_scores
 from app.schemas import (
     ExplainRequest,
     ExplainResponse,
@@ -49,11 +50,19 @@ logger = logging.getLogger(__name__)
 
 
 def _warm_models() -> None:
-    """Pull both Ollama models into VRAM before a user asks for them.
+    """Load every model a search needs before a user asks for one.
 
     Measured cold: 21.9s for the first search, against 0.8s warm - almost all
     of it loading 6.6GB of chat model plus the embedder. In a browser a 22s
     spinner is indistinguishable from a hang.
+
+    The cross-encoder is warmed too, and was not until a fresh-clone check. This
+    function predates stage 3, so the first search after every restart paid the
+    reranker's load plus its full-shape warm-up - 8,822ms of a 10.9s search -
+    and on a new machine a 2.4GB download on top: 124s, behind a UI hint that
+    promises about 20. Warmed separately from Ollama so that neither failure
+    hides the other, and only under RANK_METHOD=rerank: the container runs rrf
+    and has no torch to import.
 
     This does not make cold loads disappear. OLLAMA_KEEP_ALIVE is 30m, so an
     idle server evicts and the next search pays again; the frontend says so
@@ -67,8 +76,23 @@ def _warm_models() -> None:
     except Exception:
         # Never fatal: the API is still useful, the first search is just slow.
         logger.warning("model warmup failed; first search will be slow", exc_info=True)
+    else:
+        logger.info("models warm in %.1fs", time.perf_counter() - started)
+
+    if settings.rank_method != "rerank":
         return
-    logger.info("models warm in %.1fs", time.perf_counter() - started)
+    started = time.perf_counter()
+    try:
+        # The public entry point, so this loads exactly what a search would:
+        # _load() downloads if needed, then warms at the full pool shape. A
+        # search arriving meanwhile waits on the loader's lock rather than
+        # loading a second copy.
+        rerank_scores("warmup", ["warmup"])
+    except RerankUnavailable as exc:
+        # Remembered by the loader, so searches fall back without retrying it.
+        logger.warning("cross-encoder did not load; searches will use rrf: %s", exc)
+    else:
+        logger.info("cross-encoder warm in %.1fs", time.perf_counter() - started)
 
 
 @asynccontextmanager

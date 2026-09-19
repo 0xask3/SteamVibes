@@ -384,7 +384,12 @@ Two categories, and I'll say which one we're in at the top of each session:
   against a 963ms steady state - and a 2-pair probe does not trigger the same
   kernels. That put a p95 of 6,234ms in a results table whose real p95 is
   1,376ms, which is not a latency tail, it is one query. `_load()` warms at
-  `RERANK_CANDIDATES` for that reason.
+  `RERANK_CANDIDATES` for that reason. And the API calls it at STARTUP, from
+  `_warm_models()`, not on the first search: that function predated stage 3, so
+  until a fresh-clone check every restart's first search paid 8,822ms of load
+  and warm-up (10.9s total, against 2.5s once warmed at boot), and a new machine's
+  paid a 2.4GB download on top - 124s. Only under `RANK_METHOD=rerank`, so the
+  container, which has no torch, never tries.
 - `RERANK_CANDIDATES` stays 200 and that is measured, not inherited. Every
   `specific` target a reranker can reach is inside rank 100 and 8 of 9 `tail`
   ones are; 200 -> 500 buys 16 more targets of which 14 are `core`, the tier that

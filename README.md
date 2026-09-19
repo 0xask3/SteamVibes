@@ -140,8 +140,13 @@ uv run python -m eval.run_eval            # the numbers below
 ```
 
 **Stage 3 needs an NVIDIA GPU on the host.** The cross-encoder is loaded
-in-process by `app/rerank.py` — there is no server to start, and the model
-downloads on first use. Without a GPU, set `RANK_METHOD=rrf` in `.env`: search
+in-process by `app/rerank.py` — there is no server to start. The model is a
+**2.4 GB** download the first time anything needs it, and the API starts that
+download the moment it boots rather than inside your first search, so watch the
+uvicorn terminal for `cross-encoder warm` (measured: 108s including the download,
+8s once it is cached). `run_eval` and the CLI fetch it themselves on their first
+run. If it crawls, set `HUGGING_FACE` in `.env` — unauthenticated Hub downloads
+are rate limited. Without a GPU, set `RANK_METHOD=rrf` in `.env`: search
 still works and drops to the two-stage numbers below. Left unset it will try,
 fail to load, log a warning and fall back on every query, which is correct
 behaviour but not worth watching. The containerised backend is already pinned to
@@ -281,7 +286,9 @@ figure was the worst case across scenarios and most queries pass their first
 count.
 
 `max` is where the honesty is: 9,283ms of reranking is one request paying the
-cold model load, and it stays in the window. Excluding slow requests to make a
+cold model load, and it stays in the window. (Measured before the API loaded the
+cross-encoder at startup; a request now pays that only if it arrives while the
+warm-up is still running.) Excluding slow requests to make a
 latency number look better is the failure this whole project is arguing against,
 so nothing is dropped and `n` is reported beside every figure instead.
 
