@@ -4,24 +4,15 @@
     RANK_METHOD=rrf uv run python -m eval.run_eval --dump b.json
     uv run python -m eval.compare_runs a.json b.json
 
-This is the harness CLAUDE.md has asked for since failures.md #37 - "eval/ has
-no harness for this yet - it was done in a scratch script - so build one if a
-fourth model is compared." Three wrong headlines in one session came out of
-reading a point estimate as a result.
-
 TWO REFUSALS, both of them the point of the file:
 
-  It will not compare dumps from DIFFERENT QUERY SETS. Recall is comparable
-  across configs on a fixed set and never across sets; expanding the set from 74
-  to 118 queries invalidated every number measured on the old one. Two sets side
-  by side is not a weaker comparison, it is not a comparison.
+  Dumps from DIFFERENT QUERY SETS. Recall is comparable across configs on a
+  fixed set and never across sets, so this is not a weaker comparison - it is
+  not a comparison.
 
-  It will not compare dumps whose queries do not line up row for row. The whole
-  value of a paired test is that ~100 of 118 queries score identically and are
-  discarded as ties; pairing the wrong rows silently converts that strength into
-  noise.
-
-Throwaway/eval category per CLAUDE.md: if it runs, it's fine.
+  Dumps whose queries do not line up row for row. The value of a paired test is
+  that ~100 of 118 queries are discarded as ties; pairing the wrong rows
+  silently converts that strength into noise.
 """
 
 import argparse

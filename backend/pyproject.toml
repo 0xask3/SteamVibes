@@ -28,20 +28,12 @@ dev = [
     "types-tqdm>=4.67",
     "types-PyYAML>=6.0",
 ]
-# The cross-encoder, and a group rather than a main dependency for the sake of
-# the CONTAINER. On Linux these two pull 3.0GB of wheels - torch, triton and a
-# dozen nvidia-* CUDA libraries - and the backend image can use none of it:
-# docker-compose pins RANK_METHOD=rrf because the GPU is unreachable from a
-# container under Docker Desktop's WSL2 backend (NOTES.md 2026-09-07). While
-# these sat in `dependencies`, `uv sync --no-dev` installed them anyway, so
-# `docker compose up` spent most of its first build downloading them, and five
-# comments across the repo claimed "torch is not in the image" when it was.
-#
-# In default-groups below, so NOTHING changes on the host: `uv run` and
-# `uv sync` still install them and run_eval still reranks out of the box. Only
-# the Dockerfile opts out, with --no-default-groups. app/rerank.py imports
-# sentence_transformers lazily inside _load(), so a process without it degrades
-# to the SQL ordering with a WARNING rather than failing at import.
+# A group rather than a main dependency for the CONTAINER's sake: these pull
+# 3.0GB of torch and CUDA wheels the backend image can use none of, because the
+# GPU is unreachable from it (NOTES.md 2026-09-07). Listed in default-groups
+# below, so nothing changes on the host - only the Dockerfile opts out, with
+# --no-default-groups. app/rerank.py imports it lazily, so a process without it
+# degrades to the SQL ordering.
 rerank = [
     "sentence-transformers>=6.0.1",
     "torch>=2.9.1",
@@ -53,20 +45,14 @@ default-groups = ["dev", "rerank"]
 [tool.ruff]
 line-length = 88
 
-# torch must come from PyTorch's own index, not PyPI. The PyPI wheel for
-# Windows is CPU-ONLY and installs without complaint - `torch.cuda.is_available()`
-# just returns False, which looks like a broken GPU rather than a wrong wheel.
-# `explicit = true` means only the packages named in [tool.uv.sources] use this
-# index, so everything else still resolves from PyPI.
+# torch must come from PyTorch's own index, not PyPI: the PyPI wheel for
+# Windows is CPU-ONLY and installs without complaint, and the only symptom is
+# torch.cuda.is_available() == False, which looks like a broken GPU rather than
+# a wrong wheel. `explicit = true` keeps everything else on PyPI. Drop
+# [tool.uv.sources] and resolution silently goes back to the CPU-only build.
 #
-# cu130 matches the host driver (CUDA UMD 13.4). The index has since caught up
-# to PyPI - uv.lock now pins torch 2.14.0+cu130 for cp314, where this comment
-# once recorded a 2.9.1 ceiling - but the binding is what keeps it honest: drop
-# `[tool.uv.sources]` and resolution goes back to PyPI's CPU-only build.
-#
-# It also publishes NO macOS wheels, only manylinux and win_amd64, so `uv sync`
-# cannot resolve on a Mac. That is the whole platform constraint in README's
-# quickstart, and it comes from this block.
+# This index publishes no macOS wheels, which is the platform constraint in
+# README's quickstart.
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
@@ -76,10 +62,9 @@ explicit = true
 torch = { index = "pytorch-cu130" }
 
 [tool.ruff.lint.per-file-ignores]
-# UP037 wants the quotes removed from Mapped[list["GameTag"]]. Don't: string
+# UP037 wants the quotes gone from Mapped[list["GameTag"]]. Don't: string
 # forward references are SQLAlchemy's documented idiom for models defined later
-# in the file, and they resolve at mapper-configuration time rather than at
-# class creation. Removing them trades a working pattern for a lint score.
+# in the file, and they resolve at mapper-configuration time.
 "app/models.py" = ["UP037"]
 
 [tool.mypy]

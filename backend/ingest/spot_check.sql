@@ -3,9 +3,8 @@
 --   docker compose exec -T db psql -U steam -d steamvibe -f - < backend/ingest/spot_check.sql
 --
 -- Open each steam_url and compare: name, release date, price, platforms,
--- review counts, top tags. This is the only check that catches wrong
--- assumptions rather than wrong parsing — it compares against the outside
--- world instead of against the source file.
+-- review counts, top tags. The only check that catches wrong ASSUMPTIONS
+-- rather than wrong parsing, because it compares against the outside world.
 --
 -- \x auto makes wide rows readable in psql.
 \x auto

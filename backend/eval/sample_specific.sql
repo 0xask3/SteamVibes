@@ -1,13 +1,9 @@
 -- Candidate targets for the `specific` eval tier: the HEAD of the corpus.
 --
--- WHY THIS EXISTS
--- `sample_longtail.sql` samples the tail; this samples its mirror image, and
--- the two are deliberately identical apart from the review band. failures.md
--- #28 claims `specific` and `tail` differ only in how popular their targets are,
--- which is what makes a weight sweep across the pair a controlled comparison.
--- That claim was not quite honest when it was written: the tail targets came
--- from a sampler and the specific ones were hand-picked, so target popularity
--- was not the only thing that varied. This file closes that gap.
+-- The mirror image of `sample_longtail.sql`, deliberately identical apart from
+-- the review band - which is what makes a weight sweep across the pair a
+-- CONTROLLED comparison, and what hand-picking one side would destroy.
+-- See failures.md #28.
 --
 -- Same DISTINCT ON, same md5 ordering, same percentile column, same tag and
 -- description filters. ONLY the band changes:

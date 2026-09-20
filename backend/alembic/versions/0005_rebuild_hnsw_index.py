@@ -1,18 +1,14 @@
 """Rebuild the HNSW index after 0004's bulk write and the reload that follows.
 
-0004 dropped ix_games_embedding_hnsw because a full-table UPDATE forces a new
-entry in every index per row, and HNSW inserts are expensive. This puts it back
-once the writes are finished.
-
-Run order:
+0004 dropped it because a full-table UPDATE forces a new graph entry per row.
+This puts it back once the writes are finished.
 
     uv run alembic upgrade 0004
     uv run python -m ingest.load_games --reload      # populates required_age
     uv run alembic upgrade head                      # this migration
 
-Identical definition to 0003. vector_cosine_ops must match the <=> operator in
-app/search.py; a mismatch does not error, it silently disables the index and
-falls back to scanning every row.
+Identical to 0003, including vector_cosine_ops, which must match the <=>
+operator in app/search.py or the index is silently ignored.
 
 Revision ID: 0005
 Revises: 0004

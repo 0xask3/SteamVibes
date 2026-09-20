@@ -1,9 +1,7 @@
 """Single-game lookup for GET /api/game/{app_id}.
 
-Deliberately separate from app/search.py. That file is the ranking path, where
-a mistake produces plausible results forever; a detail fetch has no business
-sharing space with it. Keeping them apart also means this module does not drag
-in the embedding client to read one row.
+Separate from app/search.py so the ranking path stays undiluted, and so this
+does not drag in the embedding client to read one row.
 """
 
 from sqlalchemy import select
@@ -17,8 +15,8 @@ from app.schemas import GameDetail
 def get_game(app_id: int) -> GameDetail | None:
     """One game, or None when the id does not exist.
 
-    None rather than an exception: the caller turns it into a 404, and "no such
-    game" is an ordinary answer to an arbitrary URL, not an error.
+    None rather than an exception: "no such game" is an ordinary answer to an
+    arbitrary URL, and the caller turns it into a 404.
     """
     stmt = (
         select(Game)
@@ -33,9 +31,8 @@ def get_game(app_id: int) -> GameDetail | None:
         if game is None:
             return None
 
-        # Mirrors the platform assembly in app/search.py. Duplicated rather
-        # than imported: reaching into that module for three lines would pull
-        # the whole search path in behind it.
+        # Duplicated from app/search.py rather than imported: three lines would
+        # pull the whole search path in behind them.
         platforms = [
             name
             for name, supported in (

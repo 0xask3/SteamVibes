@@ -3,12 +3,10 @@
     uv run python -m eval.compare_parsers
     uv run python -m eval.compare_parsers --models qwen3.5:9b qwen3.5:4b
 
-Answers "which model should parse queries" with evidence rather than opinion.
 Prints each model's ParsedQuery per query, flags disagreements, and times them,
-because the parser sits in the request path - a better parse that costs two
-extra seconds may not be worth it.
-
-Throwaway/eval category per CLAUDE.md: if it runs, it's fine.
+because the parser sits in the request path: a better parse that costs two extra
+seconds may not be worth it. Re-run this after ANY edit to the parser prompt -
+it reads fine either way and fails silently.
 """
 
 import argparse
@@ -29,23 +27,17 @@ QUERIES = [
     "something like dark souls but not fantasy",
     "free multiplayer shooter released after 2020",
     "cozy farming game with fishing",
-    # Four constraints at once, and the price sits last with a trailing $.
-    # Added after a prompt edit silently destroyed platform extraction on it
-    # while all ten queries above still passed - the harness could not catch a
-    # regression it never exercised.
+    # Four constraints at once, price last with a trailing $. Added after a
+    # prompt edit destroyed platform extraction while all ten above passed.
     "game that feels like call of duty, but no wars on linux under 30$",
-    # The price sits last, behind a platform, and was silently dropped for
-    # weeks: the schema made every field optional, so the model just never
-    # emitted the max_price_usd key. Not a $-versus-"dollars" problem - every
-    # notation parses alone and every notation failed here. See failures.md #33.
+    # Price last, behind a platform, and silently dropped for weeks: every
+    # field was optional, so the model never emitted the key. failures.md #33.
     "shooter, no wars, on linux under 30$",
     # Popularity plus an exclusion the trigram gap cannot yet handle.
     "I like FPS shooters, suggest some excluding call of duty, which are also popular",
-    # Four clauses, and `multiplayer` is the one that falls off the end: the
-    # model returns None here while every shorter phrasing gives False, and
-    # moving "single player" earlier in this same sentence fixes it. Now caught
-    # by wants_singleplayer() in code. The filter line must read `singleplayer`.
-    # See failures.md #32.
+    # Four clauses, and `multiplayer` falls off the end - the model returns
+    # None where every shorter phrasing gives False. Caught in code by
+    # wants_singleplayer(), so the filter line must read `singleplayer` (#32).
     "call of duty like game, but not including itself, also popular, single player",
     # The other half of #32: the referenced game's tags must not contradict the
     # filters just extracted. Resident Evil carries `Horror`, so this excluded

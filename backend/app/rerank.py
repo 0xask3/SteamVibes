@@ -1,43 +1,19 @@
 """Cross-encoder reranking over the candidate pool, in-process on the host GPU.
 
-Why a cross-encoder. A bi-encoder embeds the query and the document separately
-and compares vectors, so it never reads them together - it cannot tell that
-"co-op" names a mode rather than a word. A cross-encoder scores the pair. It is
-far too slow to run over 130,651 games, which is exactly why it runs over the
-200 that stage 1 already picked. Measured justification: of the 76 labelled
-targets not already in the top 10, ALL 9 tail misses and 9 of 11 specific misses
-are inside that pool - found by retrieval and buried by the ordering.
+A bi-encoder never reads query and document together; a cross-encoder scores
+the pair, too slowly for 130,651 games and fast enough for the 200 stage 1
+picked - where all 9 tail misses and 9 of 11 specific misses already sit.
 
-Why in-process rather than a model server, which is the shape every other model
-in this project has. Two serving routes were tried first and both are dead ends
-on this machine:
+In-process because both serving routes are dead here: Ollama has no rerank
+endpoint (404, PR #7219 open since 2024), and TEI cannot reach the GPU through
+Docker Desktop's WSL2 backend, where the CUDA driver API answers
+CUDA_ERROR_NO_DEVICE and it starts on CPU with only a warning. See NOTES.md
+2026-09-07. The cost: the containerised backend cannot rerank at all, so
+docker-compose pins RANK_METHOD=rrf.
 
-  Ollama has no rerank endpoint at all. `POST /api/rerank` is a 404 as of
-  0.33.3 and PR #7219 has been open since 2024, so BUILD_PLAN's
-  `ollama pull bge-reranker-v2-m3` cannot work. Every community workaround
-  scores through the EMBEDDING endpoint, which is the bi-encoder we already have.
-
-  Hugging Face TEI serves rerankers properly, but not here: Docker Desktop's
-  WSL2 backend hands a container working NVML - `nvidia-smi` lists the 4080 by
-  UUID - alongside a CUDA driver API that answers CUDA_ERROR_NO_DEVICE, so TEI
-  starts on CPU with a warning rather than an error and never finishes warming
-  up. It is a stale user-mode driver in Docker's own managed WSL distro
-  (615.65.06 against a 616.56 kernel driver), and it tracks Docker Desktop's
-  version rather than the host's NVIDIA driver, so upgrading the driver and
-  restarting WSL does not move it. Reproduced with a plain `docker run --gpus
-  all` on the same image, so it is not the compose file. See NOTES.md.
-
-The host GPU works fine - Ollama has been using it all along - so the model
-loads here. BUILD_PLAN sanctions this explicitly: "or run it via
-sentence-transformers". It is a model runtime, not an agent framework, so it
-does not touch CLAUDE.md's actual prohibition. The cost is real and worth naming:
-the containerised backend cannot rerank, because torch is not in that image and
-the GPU is not either. That is the same honest limitation ingest already has.
-
-The failure contract is the parser's. Reranking improves an ordering that
-already works, so a model that will not load must degrade to the SQL ordering
-with a WARNING, never a 500. `RerankUnavailable` carries the reason and
-app/search.py is the only place that catches it.
+The failure contract is the parser's - a model that will not load degrades to
+the SQL ordering with a WARNING, never a 500. `RerankUnavailable` carries the
+reason and app/search.py is the only place that catches it.
 """
 
 import logging
@@ -50,12 +26,10 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Per-model input templates - the reranker's answer to app/embedding.py's
-# _MODEL_PREFIXES. A cross-encoder trained on a wrapped prompt returns near-zero
-# logits on a bare pair, and the failure is QUIET: on an easy triple Qwen3 still
-# orders correctly, with a score spread of 0.121 against bge's 0.865. Right
-# order, no conviction - fine on three documents, useless across 200 similar
-# games, and worth 8.1% recall against a 60.5% baseline. See failures.md #36.
+# Per-model input templates, the reranker's answer to app/embedding.py's
+# _MODEL_PREFIXES. A model trained on a wrapped prompt returns near-zero logits
+# on a bare pair, and the failure is QUIET - it still orders an easy triple
+# correctly, just without conviction, and scored 8.1% overall. failures.md #37.
 _QWEN3_SYSTEM = (
     "<|im_start|>system\n"
     "Judge whether the Document meets the requirements based on the Query and "
@@ -68,10 +42,8 @@ _QWEN3_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 def _qwen3_pair(query: str, document: str) -> tuple[str, str]:
     """Qwen3-Reranker's chat template, split across the CrossEncoder pair.
 
-    Both halves are load-bearing and neither is decoration: the model was
-    trained to emit a yes/no token at exactly that assistant preamble, and the
-    seq-cls conversion reads the same position. Dropping the suffix is what
-    produced the near-zero logits.
+    Both halves are load-bearing: the yes/no logit the model was trained to
+    emit lands at exactly that assistant preamble.
     """
     return (
         f"{_QWEN3_SYSTEM}<Instruct>: {settings.rerank_instruction}\n<Query>: {query}\n",
@@ -79,12 +51,9 @@ def _qwen3_pair(query: str, document: str) -> tuple[str, str]:
     )
 
 
-# Matched as a FAMILY substring, which is a different rule from
-# app/embedding.py's exact-name match, and deliberately. There the exact name
-# matters because nomic-embed-text and nomic-embed-text-v2-moe want different
-# prefixes. Here every Qwen3-Reranker shares one template - across sizes, across
-# the seq-cls conversion, and across community re-uploads that keep the family
-# name in the id - so exact matching would silently mis-invoke all of them.
+# Matched as a FAMILY substring, unlike app/embedding.py's exact-name rule:
+# every Qwen3-Reranker shares one template across sizes, conversions and
+# re-uploads, so exact matching would silently mis-invoke all of them.
 _TEMPLATES: tuple[tuple[str, Callable[[str, str], tuple[str, str]]], ...] = (
     ("qwen3-reranker", _qwen3_pair),
 )
@@ -93,8 +62,8 @@ _TEMPLATES: tuple[tuple[str, Callable[[str, str], tuple[str, str]]], ...] = (
 def _pair_for(model: str, query: str, document: str) -> tuple[str, str]:
     """Wrap one (query, document) pair the way this model expects it.
 
-    The default is the raw pair, which is what bge and every classic
-    cross-encoder want.
+    The default is the raw pair, which is what bge and the classic
+    cross-encoders want.
     """
     lowered = model.lower()
     for family, formatter in _TEMPLATES:
@@ -103,10 +72,9 @@ def _pair_for(model: str, query: str, document: str) -> tuple[str, str]:
     return query, document
 
 
-# Loaded once, lazily, behind a lock. Lazily because importing this module must
-# not cost a model load for the CLI paths and evals that never rerank; behind a
-# lock because FastAPI endpoints are plain `def` and therefore run in a
-# threadpool, so two concurrent first-requests would otherwise both load it.
+# Lazily, so importing this module costs nothing for paths that never rerank;
+# behind a lock because `def` endpoints run in a threadpool, so two concurrent
+# first requests would otherwise both load it.
 _model: Any = None
 _model_name: str | None = None
 _load_lock = threading.Lock()
@@ -120,10 +88,8 @@ class RerankUnavailable(RuntimeError):
 def _load() -> Any:
     """Return the loaded CrossEncoder, raising RerankUnavailable if it will not.
 
-    A failed load is remembered. Without that, every search would re-attempt a
-    multi-second import-and-download that has already failed once, turning a
-    quality regression into a latency outage - and the WARNING would repeat per
-    request instead of per process.
+    A failed load is remembered: retrying a multi-second import-and-download on
+    every search turns a quality regression into a latency outage.
     """
     global _model, _model_name, _load_failed
 
@@ -133,31 +99,25 @@ def _load() -> Any:
         raise RerankUnavailable(_load_failed)
 
     with _load_lock:
-        # Re-check inside the lock: another thread may have loaded it while this
-        # one waited.
+        # Re-check inside the lock: another thread may have loaded it.
         if _model is not None and _model_name == settings.rerank_model:
             return _model
-        # Copied into the environment rather than passed as an argument: every
-        # download path inside huggingface_hub reads HF_TOKEN, including the ones
-        # transformers reaches through config and tokenizer loading. setdefault,
-        # so a token already exported in the shell still wins.
+        # Into the environment, not an argument: every download path inside
+        # huggingface_hub reads HF_TOKEN. setdefault, so an exported token wins.
         if settings.hugging_face is not None:
             os.environ.setdefault("HF_TOKEN", settings.hugging_face.get_secret_value())
 
         try:
-            # Imported here, not at module scope: torch costs seconds to import
-            # and pulls ~2.5GB of CUDA libraries into the process. Nothing that
-            # does not rerank should pay that, including `run_eval` at the
-            # default RANK_METHOD and every ingest script.
+            # Imported here, not at module scope: torch costs seconds and pulls
+            # ~2.5GB of CUDA libraries into the process, and nothing that does
+            # not rerank should pay that - including every ingest script.
             from sentence_transformers import CrossEncoder
 
             model = CrossEncoder(
                 settings.rerank_model,
                 device=settings.rerank_device,
-                # Runs code from the model repo. Off unless asked for; see the
-                # setting's comment in app/config.py.
+                # Runs code from the model repo; off unless asked for.
                 trust_remote_code=settings.rerank_trust_remote_code,
-                # fp16 halves the weights and roughly doubles throughput on Ada.
                 # Ranking is an ORDERING, so the last bits of score precision do
                 # not survive into the output anyway.
                 model_kwargs={"torch_dtype": "float16"}
@@ -171,12 +131,9 @@ def _load() -> Any:
 
         _model, _model_name, _load_failed = model, settings.rerank_model, None
 
-        # Warm up at FULL POOL SIZE, not with a token pair. The first batch of a
-        # given shape pays CUDA kernel selection, and it is not small: Qwen3's
-        # first 200-pair call took 9,668ms against a 963ms steady state, which
-        # landed on whichever query happened to go first and put a 6.2s p95 in a
-        # results table whose real p95 is under a second. A 2-pair probe does not
-        # trigger the same kernels, so it has to be the real shape.
+        # Warm at FULL POOL SIZE: the first batch of a given shape pays CUDA
+        # kernel selection (9,668ms against a 963ms steady state), and a 2-pair
+        # probe does not trigger the same kernels.
         try:
             filler = ["warmup document"] * settings.rerank_candidates
             model.predict(
@@ -198,11 +155,10 @@ def _load() -> Any:
 
 
 def rerank_scores(query: str, documents: list[str]) -> list[float]:
-    """Score every document against the query, in input order.
+    """Score every document against the query, in INPUT ORDER.
 
-    Order is the contract: app/search.py pairs these positionally with the rows
-    it fetched, so returning them sorted would silently attach every score to
-    the wrong game - which reads as a bad model rather than a bug.
+    Order is the contract: app/search.py pairs these positionally with its
+    rows, so sorting here would attach every score to the wrong game.
     """
     if not documents:
         return []
@@ -226,11 +182,9 @@ def rerank_scores(query: str, documents: list[str]) -> list[float]:
 def verify_rerank_model() -> None:
     """Load the model before an eval measures anything with it.
 
-    Deliberately eager, and only in `run_eval`. The search path degrades on a
-    failed load, which is right for a user and wrong for a measurement: a run
-    that silently fell back would report the BASELINE ordering as a reranker
-    result, which is the same invisible-mismatch failure as EMBED_MODEL
-    disagreeing with games.embedding_model. Better to refuse to start.
+    Eager, and only in `run_eval`: degrading is right for a user and wrong for
+    a measurement, which would report the BASELINE ordering under this model's
+    label. Better to refuse to start.
     """
     try:
         model = _load()
@@ -239,12 +193,9 @@ def verify_rerank_model() -> None:
             f"RANK_METHOD=rerank but the cross-encoder would not load: {exc}"
         ) from exc
 
-    # Loading is not scoring, and that distinction cost a whole eval run.
-    # gte-multilingual-reranker-base loads cleanly and then raises a CUDA
-    # device-side assert on every predict(), so all 118 queries degraded to the
-    # SQL ordering and the harness printed a table byte-identical to the
-    # baseline - which reads as "this model is no better" rather than "this
-    # model never ran". Smoke-test with a pair whose ordering is not in doubt.
+    # LOADING IS NOT SCORING: a model can load cleanly and raise on every
+    # predict(), which printed a table byte-identical to the baseline and read
+    # as "no better" rather than "never ran". failures.md #36.
     probe = [
         "Cities: Skylines II. A city building simulator. Tags: City Builder, Simulation.",
         "Barbie Dreamhouse Adventures. Decorate rooms and style outfits. Tags: Casual.",
@@ -257,9 +208,8 @@ def verify_rerank_model() -> None:
             f"failed to score: {exc}"
         ) from exc
 
-    # Constant scores are the other silent failure: `_ranks` is a stable sort, so
-    # every tie keeps the incoming cosine order and the fused result reproduces
-    # the baseline exactly. Indistinguishable from a model that has no opinion.
+    # Constant scores are the other silent failure: `_ranks` is stable, so ties
+    # keep cosine order and the result reproduces the baseline exactly.
     if len(set(scores)) < len(scores):
         raise RuntimeError(
             f"{settings.rerank_model} returned identical scores {scores} for two "
@@ -269,9 +219,8 @@ def verify_rerank_model() -> None:
 
     device = getattr(model, "device", "unknown")
     if settings.rerank_device == "cuda" and "cuda" not in str(device).lower():
-        # CPU is not a slower version of this measurement, it is an unusable
-        # one - TEI on CPU never finished warming up, and a full eval would be
-        # hours. Loud, because sentence-transformers falls back silently.
+        # Loud, because sentence-transformers falls back to CPU silently and a
+        # CPU eval would run for hours.
         raise RuntimeError(
             f"RERANK_DEVICE=cuda but {settings.rerank_model} loaded on "
             f"{device!r}. Check torch: a PyPI wheel on Windows is CPU-only and "

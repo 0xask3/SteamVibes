@@ -1,11 +1,7 @@
 /**
- * Mirrors backend/app/schemas.py. Kept hand-written rather than generated:
- * there are four shapes here and a codegen step would be more machinery than
- * it saves.
- *
- * Field order in ParsedQuery matches the Python model, where the order is
- * load-bearing for the LLM's constrained generation. It does not matter here,
- * but keeping them aligned makes the two files diffable by eye.
+ * Mirrors backend/app/schemas.py, hand-written because codegen would be more
+ * machinery than four shapes save. Field order matches the Python model, where
+ * it IS load-bearing, so the two files stay diffable by eye.
  */
 
 export type Platform = "windows" | "mac" | "linux";
@@ -24,10 +20,9 @@ export interface ParsedQuery {
   min_reviews: number | null;
 
   /**
-   * Set by the backend's referenced-game lookup, never by the model. When the
-   * query names a well-known game ("like elden ring"), its tags are appended
-   * to semantic_query and its name lands here. excluded_app_ids is populated
-   * only when the query also asked to leave that game out.
+   * Set by the backend's referenced-game lookup, never by the model:
+   * "like elden ring" appends its tags to semantic_query and lands its name
+   * here. excluded_app_ids fills only when the query asked to leave it out.
    */
   reference_game: string | null;
   excluded_app_ids: number[];
@@ -42,17 +37,14 @@ export interface SearchResult {
   score: number;
 
   /**
-   * The key the results were actually ordered by, once the popularity term is
-   * folded in. Equals `score` when RANK_METHOD is "none". Not comparable
-   * across rank methods - "rrf" values sit near 1/k, not on the 0-1
-   * similarity scale.
+   * What the results were ordered by, once popularity is folded in. Equals
+   * `score` under RANK_METHOD "none", and NOT comparable across methods.
    */
   rank_score: number;
 
   /**
-   * A STRING, not a number. Pydantic serialises Decimal as a string to avoid
-   * float rounding, so "9.99" arrives rather than 9.99. Calling .toFixed() on
-   * it would throw.
+   * A STRING, not a number: Pydantic serialises Decimal as a string to avoid
+   * float rounding, so .toFixed() on it would throw.
    */
   list_price_usd: string | null;
   is_free: boolean;
@@ -82,8 +74,7 @@ export interface SearchResponse {
 
   /**
    * null when no cross-encoder ran. A number means it did, INCLUDING when it
-   * failed and search fell back to the SQL ordering - time spent on a dead
-   * model is still time spent, so `reranked` is what says whether it worked.
+   * failed and fell back, so `reranked` is what says whether it worked.
    */
   rerank_ms: number | null;
   reranked: boolean;
@@ -95,13 +86,10 @@ export interface SearchResponse {
   under_delivered: boolean;
 
   /**
-   * Filters widened to fill this page, in the order they were given up. Empty
-   * is the normal case.
-   *
-   * NOTE that `parsed` above is the RELAXED set - what actually ran - so the
-   * chips reflect the real query. This list is the diff that explains why they
-   * differ from what was typed, and the UI must show it: silently widening a
-   * constraint the user stated is worse than returning few results.
+   * Filters widened to fill this page; empty is the normal case. `parsed`
+   * above is the RELAXED set, so the chips show the query that ran and this is
+   * the diff explaining it. The UI must render it: silently widening a stated
+   * constraint is worse than a short page.
    */
   relaxed: RelaxationStep[];
 }
@@ -124,13 +112,10 @@ export interface SearchRequest {
 
 /**
  * One "why this matches" line, after the backend checked it against the
- * database.
- *
- * `grounded: false` means a model DID write something and it was thrown away
- * for citing a tag the game does not have - `why` is then a deterministic line
- * built from the game's own tags. The flag has to reach the UI: a canned
- * sentence presented as an explanation is precisely the failure the
- * verification exists to prevent.
+ * database. `grounded: false` means the model's line was DISCARDED for citing
+ * a tag the game lacks, and `why` is built from the game's own tags instead.
+ * The flag has to reach the UI - a canned sentence presented as an explanation
+ * is the failure the verification exists to prevent.
  */
 export interface VerifiedExplanation {
   app_id: number;
@@ -152,11 +137,9 @@ export interface ExplainResponse {
 }
 
 /**
- * One stage's latency over the server's window. See GET /api/stats.
- *
- * `p95` is null until the server has `min_p95_samples` requests, because below
- * that the 95th percentile is literally the maximum and labelling the maximum
- * "p95" is wrong rather than merely imprecise. Render the gap, never a blank.
+ * One stage's latency over the server's window. `p95` is null below
+ * `min_p95_samples`, where it would literally be the maximum - a wrong label,
+ * not an imprecise number. Render the reason, never a blank.
  */
 export interface StageStats {
   n: number;
@@ -172,12 +155,9 @@ export interface EndpointStats {
 }
 
 /**
- * GET /api/stats.
- *
- * Read the scope before quoting anything: `window` counts REQUESTS, not time;
- * the figures cover one server process and reset when it restarts; and they
- * see API traffic only, so they are not the same measurement as the median
- * `run_eval` prints.
+ * GET /api/stats. Read the scope before quoting anything: `window` counts
+ * REQUESTS, not time; the figures are per-process; and they see API traffic
+ * only, so they are not the measurement `run_eval` prints.
  */
 export interface StatsResponse {
   window: number;

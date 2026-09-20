@@ -1,12 +1,9 @@
 """Ollama chat client, constrained to a JSON schema.
 
-Same shape as app/embedding.py: one long-lived httpx.Client, 127.0.0.1, and
-keep_alive so an idle process does not pay a cold model load.
-
-Ollama's `format` parameter takes a JSON schema and constrains generation to
-match it, so malformed JSON is close to impossible. That does not make the
-caller's fallback unnecessary - schema-valid nonsense is still nonsense - but
-it removes the most common failure.
+Same shape as app/embedding.py: one long-lived httpx.Client and keep_alive.
+`format` constrains generation to the schema, which makes malformed JSON
+nearly impossible - but schema-valid nonsense is still nonsense, so the
+caller's fallback stays.
 """
 
 import json
@@ -31,9 +28,8 @@ def chat_json(
 ) -> dict[str, Any]:
     """One chat turn, returning parsed JSON matching `schema`.
 
-    Raises on transport failure, a non-2xx response, or unparseable content.
-    Callers decide what to do about it — app/query_parser.py degrades to pure
-    semantic search rather than propagating.
+    Raises on transport failure, a non-2xx response or unparseable content;
+    callers decide what to do, and app/query_parser.py degrades.
     """
     payload: dict[str, Any] = {
         "model": model or settings.chat_model,
@@ -45,7 +41,6 @@ def chat_json(
         "stream": False,
         "keep_alive": settings.ollama_keep_alive,
         "options": {
-            # Deterministic: the same query should parse the same way twice.
             # A parser that varies run to run cannot be evaluated.
             "temperature": 0,
             # Must hold the 452-tag vocabulary. See settings.chat_num_ctx.
@@ -53,9 +48,8 @@ def chat_json(
         },
     }
 
-    # Sent only when set. Ollama 400s on `think` for a model that does not
-    # support it, so a non-thinking control model needs the key absent, not
-    # false. See settings.chat_think.
+    # Sent only when set: Ollama 400s on `think` for a model predating it, so
+    # the key must be ABSENT rather than false.
     effective_think = settings.chat_think if think is None else think
     if effective_think is not None:
         payload["think"] = effective_think

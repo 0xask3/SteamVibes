@@ -1,29 +1,18 @@
 """One-line "why this matches" per result, then checked against the database.
 
-The explanation is not the deliverable. The DISCARD RATE is. An LLM asked to
-justify a search result will cheerfully claim a game is `Souls-like` because the
-sentence reads well, and a plausible sentence attached to a real game is the
-hardest kind of wrong to notice - it looks like the feature working. So every
-claim is verified against `game_tags` before it reaches a user, a failed
-explanation is thrown away rather than repaired, and `eval/run_explain_eval.py`
-reports how often that happens.
+The sentence is not the deliverable, the DISCARD RATE is: a plausible sentence
+attached to a real game is the hardest kind of wrong to notice. Three
+properties make the check mean something, and none is optional:
 
-Three properties make the check mean something:
+  The grounding data comes from the DATABASE, never the caller - a verifier fed
+  client-supplied tags is checking the model against the client.
+  A discard is FINAL. Retrying until it passes converts a measured failure rate
+  into a hidden latency cost.
+  The fallback is DETERMINISTIC and marked `grounded=False` all the way to the
+  UI, so a canned line is never presented as an explanation.
 
-  The grounding data comes from the DATABASE, never from the caller. The
-  endpoint takes app_ids, not games. A verifier fed client-supplied tags is
-  checking the model against the client and proves nothing.
-
-  A discard is FINAL. No retry, no second model call, no "ask it again nicely".
-  Retrying until it passes would turn a measured failure rate into a hidden
-  latency cost, and the failure rate is the product here.
-
-  The fallback is DETERMINISTIC and marked. `grounded=False` travels all the way
-  to the UI, so a canned line is never presented as though a model wrote it.
-
-Honest about scope: this catches invented TAGS. A model that invents a plot
-detail out of the short_description passes every check below. That limit is in
-the README rather than implied away.
+Scope, stated in the README rather than implied away: this catches invented
+TAGS. A model that invents a plot detail passes every check below.
 """
 
 import logging
@@ -41,13 +30,10 @@ from app.schemas import Explanation, VerifiedExplanation
 
 logger = logging.getLogger(__name__)
 
-# Tags shown to the model per game. The full list runs to 20+ and most of the
-# signal is in the first few, which are votes-ordered by the ingest.
+# The full list runs to 20+, and it is votes-ordered by the ingest.
 TAGS_PER_GAME = 8
 
-# Descriptions run to ~1,100 bytes and ten of them plus the vocabulary would
-# crowd the context. The model needs enough to write one sentence, not the
-# whole blurb.
+# Enough to write one sentence from. Ten full blurbs would crowd the context.
 DESCRIPTION_CHARS = 240
 
 SYSTEM_PROMPT = """You explain why a video game matches a player's search.
@@ -75,10 +61,9 @@ Example for the search "cozy farming game with fishing":
 def _schema() -> dict[str, Any]:
     """JSON schema for a list of Explanation, for Ollama's `format`.
 
-    Wrapped in an object with a required `items` array: `format` takes a
-    schema, and a bare top-level array gives the model no field name to anchor
-    on. `required` is set explicitly for the same reason `_REQUIRED_FIELDS`
-    exists in the parser - see failures.md #33.
+    Wrapped in an object with a required `items` array: a bare top-level array
+    gives the model no field name to anchor on, and `required` is explicit for
+    the same reason `_REQUIRED_FIELDS` exists in the parser (failures.md #33).
     """
     return {
         "type": "object",
@@ -101,11 +86,8 @@ class GameRecord(NamedTuple):
 def _load_games(app_ids: list[int]) -> dict[int, GameRecord]:
     """(name, description, tags) per id - the ground truth the model is graded on.
 
-    Plain tuples rather than ORM objects: everything needed is a column on
-    `games` (`tags` is the backfilled text[] with the GIN index, not a
-    relationship), so nothing here should outlive the session or lazy-load
-    later. Returning detached instances is how a working function starts
-    raising DetachedInstanceError six months from now.
+    Plain tuples rather than ORM objects, so nothing outlives the session or
+    lazy-loads later.
     """
     with session_scope() as session:
         rows = session.execute(
@@ -133,12 +115,9 @@ def _prompt(query: str, games: list[GameRecord]) -> str:
     return "\n".join(lines)
 
 
-# A tag inside a NEGATED clause is not a claim, it is a denial. The prompt asks
-# the model to hedge rather than invent ("if a game does not really fit, say
-# so"), so "it is a Farming Sim, but does not include Fishing" is the model
-# obeying - and without this guard the checker punished it for saying the word.
-# Two of eight audited discards were exactly that. CLAUDE.md already carries
-# this lesson for wants_singleplayer(); it applies to any regex over prose.
+# A tag inside a NEGATED clause is a denial, not a claim: the prompt asks the
+# model to hedge rather than invent, so punishing it for that inflated the rate.
+# Any regex over prose needs this guard.
 _NEGATION = re.compile(
     r"\b(?:not|no|without|omits?|lacks?|lacking|missing|absent|excludes?|"
     r"isn't|aren't|doesn't|don't|never|nor)\b",
@@ -165,25 +144,15 @@ def _clause_around(text: str, start: int, end: int) -> str:
 def _prose_tags(why: str, vocabulary: tuple[str, ...]) -> set[str]:
     """Tags CLAIMED in the prose, whether or not they were declared.
 
-    Case-SENSITIVE whole-word matching, deliberately. Real tags are Title Case
-    (`Base-Building`, `Open World`), so "plenty of action" does not trip
-    `Action` while "it is Souls-like" does. This is a floor on prose
-    hallucination, not a complete check.
+    Case-SENSITIVE whole-word matching, so "plenty of action" does not trip
+    `Action` while "it is Souls-like" does. A floor on prose hallucination, not
+    a complete check.
 
-    Three things are deliberately NOT counted, each found by auditing real
-    discards rather than by reasoning about them - and every one of them
-    inflated the rate in the direction nobody investigates:
-
-    Overlapping matches resolve LONGEST-FIRST. `Farming` and `Farming Sim` are
-    both tags, so "it is a Farming Sim" matches both and a game carrying only
-    the longer one gets accused of citing the shorter.
-
-    A tag in a NEGATED clause is a denial, not a claim. See _NEGATION.
-
-    A SENTENCE-INITIAL single-word tag is not evidence of anything, because the
-    capital letter is grammar rather than a citation - "Experience the daily
-    life of a witch" is not claiming the `Experience` tag. Multi-word tags still
-    count there, since "Open World games are..." really does name one.
+    Three guards, each found by auditing real discards, and each of which was
+    inflating the rate in the direction nobody investigates: overlaps resolve
+    LONGEST-FIRST (`Farming` inside `Farming Sim`); a tag in a negated clause is
+    a denial; and a SENTENCE-INITIAL single-word tag is grammar, not a citation
+    (`Experience` is also an ordinary verb). Multi-word tags still count there.
     """
     spans: list[tuple[int, int, str]] = []
     for tag in vocabulary:
@@ -212,9 +181,8 @@ def _prose_tags(why: str, vocabulary: tuple[str, ...]) -> set[str]:
 def _fallback(game: GameRecord, wanted_tags: list[str]) -> str:
     """A deterministic line for when the model's answer was discarded.
 
-    Built from the game's own tags, so it cannot itself be wrong. Prefers the
-    overlap with what the query asked for, because "Roguelike, Deck Building"
-    answers the question better than the first two tags by vote count.
+    Built from the game's own tags, so it cannot itself be wrong, preferring
+    the overlap with what the query asked for.
     """
     tags = game.tags
     overlap = [t for t in tags if t in set(wanted_tags)]
@@ -229,10 +197,8 @@ def explain(
 ) -> tuple[list[VerifiedExplanation], float]:
     """Explain each game, discarding anything that cites what it should not.
 
-    Never raises. A dead model, a malformed response or a hallucinated tag all
-    end at the same place - a deterministic line marked `grounded=False` - for
-    the same reason the parser degrades to pure semantic search: an explanation
-    is an improvement on a result list that already works.
+    Never raises: a dead model, a malformed response and a hallucinated tag all
+    end at a deterministic line marked `grounded=False`.
     """
     started = time.perf_counter()
     games = _load_games(app_ids)
@@ -250,9 +216,8 @@ def explain(
             try:
                 parsed = Explanation.model_validate(item)
             except Exception:
-                # One bad entry must not lose the other nine. exc_info because
-                # the raw item plus the traceback is what makes a schema drift
-                # debuggable - the same reason the parser logs its raw output.
+                # One bad entry must not lose the other nine, and the raw item
+                # is what makes a schema drift debuggable.
                 logger.warning(
                     "explanation entry failed validation: %r", item, exc_info=True
                 )
@@ -269,8 +234,8 @@ def explain(
 
         reason: str | None = None
         if candidate is None:
-            # Covers both a dead model and a model that answered about games we
-            # never asked about - the latter being why app_id is checked at all.
+            # A dead model, or one that answered about a game nobody asked
+            # about - which is why app_id is checked at all.
             reason = "missing"
         elif not set(candidate.cited_tags) <= real:
             reason = "unlisted_tag"
@@ -300,10 +265,8 @@ def explain(
                 )
             )
 
-    # Ids the model returned that we never asked about. Not attached to any
-    # result - there is nothing to attach them to - but worth the log line,
-    # because inventing an app_id is the failure that made the parser stop
-    # asking for them at all.
+    # Ids nobody asked about. Nothing to attach them to, but worth the line:
+    # inventing an app_id is why the parser never sees one.
     invented = set(by_id) - {g.app_id for g in ordered}
     if invented:
         logger.warning("model returned unknown app_ids: %s", sorted(invented))

@@ -193,25 +193,23 @@ Deliberately plain where it can be: no agent loop, no LangChain, one direct HTTP
 call per model. The CLI, the API and the eval all call the same `search()`, so
 there is one ranking implementation rather than three.
 
-The parts that are *not* plain are the three-stage ranking and the parser
-schema, and both are shaped by a measurement. pgvector only accelerates
-`ORDER BY embedding <=> :v`, so a blended expression there silently drops to an
-exact scan — the popularity term cannot live in stage 1 and has to rerank a
-candidate pool instead. And `semantic_query` must be the **last** field in the
-schema, because Ollama's structured output emits fields in declaration order and
-that field is the query with every other constraint removed. Declared first,
-both models returned the sentence unstripped.
+The two parts that are *not* plain are both shaped by a measurement. pgvector
+only accelerates `ORDER BY embedding <=> :v`, so a blended expression there
+silently drops to an exact scan — the popularity term cannot live in stage 1 and
+has to rerank a candidate pool instead. And `semantic_query` must be the **last**
+field in the parser schema, because Ollama's structured output emits fields in
+declaration order and that field is the query with every other constraint
+removed. Declared first, both models returned the sentence unstripped.
 
-Stage 3 is the one place a model is loaded **in-process** rather than reached
-over HTTP, and that is not a preference. Ollama has no rerank endpoint at all
-(`POST /api/rerank` is a 404, and every community workaround scores through the
-*embedding* endpoint, which is the bi-encoder already in stage 1). Hugging Face
-TEI does serve rerankers, but under Docker Desktop's WSL2 backend a container
-gets working NVML and a CUDA driver API that answers `CUDA_ERROR_NO_DEVICE`, so
-it starts on CPU with a warning and never finishes warming up. The honest cost of
-running it in-process: **the containerised backend cannot rerank**, and
-`docker compose` pins it back to stage 2 — the same limitation ingest already
-has, for the same reason, written down rather than papered over.
+Stage 3 is the one model loaded **in-process** rather than reached over HTTP, and
+that is not a preference: Ollama has no rerank endpoint at all (`POST /api/rerank`
+is a 404, and every community workaround scores through the *embedding* endpoint,
+which is the bi-encoder already in stage 1), and Hugging Face TEI cannot reach
+the GPU through Docker Desktop's WSL2 backend — it gets a CUDA driver API that
+answers `CUDA_ERROR_NO_DEVICE`, starts on CPU with a warning, and never finishes
+warming up. The honest cost: **the containerised backend cannot rerank**, and
+`docker compose` pins it back to stage 2 — written down rather than papered over,
+like the ingest limitation above it.
 
 | | |
 | --- | --- |
@@ -256,16 +254,16 @@ review threshold 10), against the same system with stage 3 switched off:
 | German | 27 | 42.6% | 55.6% | |
 
 Reranking is worth **+10.6 points overall, 95% CI [+4.5, +17.2]** by a paired
-bootstrap over queries, 17 wins to 3 (sign test p = 0.003) — see the last
-section for why the interval is quoted and not just the number. It costs
-latency: median search goes 54ms to 865ms, of which 773ms is the cross-encoder
-scoring 200 pairs (p95 920ms). That is at a batch of 32 pairs; the original 128
-cost 1,021ms and, beside the resident chat model, filled a 16GB card and pushed
-p95 past 6 seconds — with the same top-10 sets.
+bootstrap over queries, 17 wins to 3 (sign test p = 0.003) — see the last section
+for why the interval is quoted and not just the number. It costs latency: median
+search goes 54ms to 865ms, of which 773ms is the cross-encoder scoring 200 pairs
+(p95 920ms). That is at a batch of 32 pairs; the original 128 cost 1,021ms and,
+beside the resident chat model, filled a 16GB card and pushed p95 past 6 seconds
+— for the same top-10 sets.
 
-These numbers replaced an earlier 68.8% on 2026-09-19. That figure was measured
-at `ef_search=200`, where the result depended on which graph a non-deterministic
-index build happened to produce — see *On the numbers above*.
+These replaced an earlier 68.8% on 2026-09-19, which was measured at
+`ef_search=200` where the result depended on which graph a non-deterministic
+index build produced — see *On the numbers above*.
 
 Median reviews of everything returned: 169, with 72% under 1,000. That pair is a
 counter-metric and matters more than the recall column — the reranker did not buy
@@ -287,20 +285,19 @@ excluded:
 Measured at the original reranker batch of 128 and `ef_search` of 200; at today's
 settings `run_eval` puts the rerank median at 773ms rather than 1,048ms.
 
-Two things in that table were not what I expected. **The parser costs more than
-the cross-encoder** — 1,217ms against 1,048ms at p50 — so the expensive stage is
-the one nobody thinks of as a ranking stage, and the editable-chip path, which
-skips it entirely, is worth more than it looks. And the relaxation ladder costs
-**3ms** on real queries against the 11–24ms its design note claims, because that
-figure was the worst case across scenarios and most queries pass their first
-count.
+Two things there were not what I expected. **The parser costs more than the
+cross-encoder** — 1,217ms against 1,048ms at p50 — so the expensive stage is the
+one nobody thinks of as a ranking stage, and the editable-chip path, which skips
+it entirely, is worth more than it looks. And the relaxation ladder costs **3ms**
+on real queries against the 11–24ms its design note claims, because that was the
+worst case across scenarios and most queries pass their first count.
 
 `max` is where the honesty is: 9,283ms of reranking is one request paying the
-cold model load, and it stays in the window. (Measured before the API loaded the
-cross-encoder at startup; a request now pays that only if it arrives while the
-warm-up is still running.) Excluding slow requests to make a
-latency number look better is the failure this whole project is arguing against,
-so nothing is dropped and `n` is reported beside every figure instead.
+cold model load, and it stays in the window. (Measured before the API warmed the
+cross-encoder at startup; a request now pays that only if it arrives mid
+warm-up.) Excluding slow requests to make a latency number look better is the
+failure this project argues against everywhere else, so nothing is dropped and
+`n` is reported beside every figure instead.
 
 The three choices below were measured at the old `ef_search=200` and are
 reported as measured then, not re-run.
@@ -318,20 +315,19 @@ cosine alone. The rank-fusion term is what puts Skylines first without deleting
 the small game from the results entirely, and the weight is `0.20` because that
 is about the largest value that does not start costing long-tail recall.
 
-**Choosing the reranker, and refusing to overclaim it.** Two models were
-compared properly: `Qwen3-Reranker-0.6B` and `BAAI/bge-reranker-v2-m3`. Point
-estimates said Qwen3 won by 2.7 points overall and 7.2 on `core`. A paired
-bootstrap and a sign test said otherwise — **the two are not distinguishable**
-(+2.7%, CI [-2.1%, +7.6%], 11 wins to 5, p = 0.105), with 102 of the 118 queries
-scoring *identically*. So the choice was not made on recall.
+**Choosing the reranker, and refusing to overclaim it.** Point estimates said
+`Qwen3-Reranker-0.6B` beat `BAAI/bge-reranker-v2-m3` by 2.7 points overall and
+7.2 on `core`. A paired bootstrap and a sign test said otherwise — **the two are
+not distinguishable** (+2.7%, CI [-2.1%, +7.6%], 11 wins to 5, p = 0.105), with
+102 of the 118 queries scoring *identically*.
 
-It was made on a deterministic behaviour the eval cannot score: for "city
-builder", bge drops *Cities: Skylines II* from rank 1 to **37**, behind that same
-78-review game named *City Builder*, because a relevance-only cross-encoder
-rewards literal topical match. Qwen3 — which can be given an instruction about
-what relevance *means* — holds it at rank 1. bge is 4× faster for recall that
-cannot be told apart, so on any latency budget it is the right call, and one
-`.env` line switches it.
+So the choice was made on a deterministic behaviour the eval cannot score: for
+"city builder", bge drops *Cities: Skylines II* from rank 1 to **37**, behind
+that same 78-review game named *City Builder*, because a relevance-only
+cross-encoder rewards literal topical match. Qwen3 — which can be told what
+relevance *means* — holds it at rank 1. bge is 4× faster for recall that cannot
+be told apart, so on any latency budget it is the right call, and one `.env`
+line switches it.
 
 A third candidate, `gte-multilingual-reranker-base`, is excluded as incompatible
 with transformers 5.x — which is not a quality judgement and is recorded as such.
@@ -356,10 +352,8 @@ credited with its gains.
 earlier EN/DE figure here was confounded: German was 37% `core` queries against
 English's 22%, so part of the gap was tier mix, and the per-tier matrix that
 fixed *that* still compared queries pointing at different games.
-
-`eval/queries_de.yaml` holds the **same 118 targets and tiers** as the English
-set, asked in German, so language is the only variable and the comparison is
-paired query by query:
+`eval/queries_de.yaml` holds the **same 118 targets and tiers**, asked in German,
+so language is the only variable and the comparison is paired query by query:
 
 | | English | German | difference | sign test |
 | --- | --- | --- | --- | --- |
@@ -382,14 +376,13 @@ English descriptions. Swapping to the model sold on multilingual retrieval bough
 
 **And the cross-encoder does not fix it either — a claim this README previously
 deferred and now retires.** The earlier reading was that reranking moved German
-off a stuck 55.6%; it failed a paired test at n=9, and the stated next step was
-to build a bigger German set. That set now exists, `specific` German went from 9
-queries to 44, and the answer did not change: **+4.7% [−2.5%, +11.9%], 14 wins to
-7, p = 0.189**, with `specific` at +9.1% [−2.3%, +20.5%]. Against +10.6% [+4.5%,
-+17.2%] on the mixed set. Reranking's benefit is established in aggregate and
-**not** established for German — at a sample size where that is now informative
-rather than merely underpowered. The next thing to try is a German document
-field, not a better reranker.
+off a stuck 55.6%. It failed a paired test at n=9, and the stated next step was a
+bigger German set. That set now exists, `specific` German went from 9 queries to
+44, and the answer did not change: **+4.7% [−2.5%, +11.9%], 14 wins to 7,
+p = 0.189**, against +10.6% [+4.5%, +17.2%] on the mixed set. Reranking's benefit
+is established in aggregate and **not** for German, at a sample size where that
+is informative rather than merely underpowered. The next thing to try is a German
+document field, not a better reranker.
 
 One honest limit on all of the above: these are German renderings of a fixed set
 of requests, so they measure *the penalty for asking in German*, not how German
@@ -399,10 +392,10 @@ players actually phrase things.
 30–300 reviews and 84.1% come back. Reranking cannot rescue the rest: measuring
 every labelled target's exact cosine rank shows **36 of 148 sit outside the
 200-row candidate pool entirely**, so no reordering can reach them, and 75.7%
-overall is the ceiling for any reranker here. Those are retrieval failures, and
-fixing them needs a different stage 1, not a better stage 3. They are left in the eval rather than quietly dropped, because
-removing the queries that score badly is how a benchmark starts flattering
-itself.
+overall is the ceiling for any reranker here. Those are retrieval failures and
+need a different stage 1, not a better stage 3. They are left in the eval rather
+than quietly dropped, because removing the queries that score badly is how a
+benchmark starts flattering itself.
 
 **The explanation layer hallucinates a tag in 4.6% of cases**, which is why
 every one is checked against the database before it is shown. A one-line "why
@@ -415,12 +408,11 @@ never passed off as an explanation.
 That 4.6% is a floor rather than a measure: it catches invented *tags*, and a
 model that invents a plot detail out of the description passes every check. It
 also started at 7.3%, and the difference was **my** bugs, not the model's —
-auditing eight discards against their games' real tags showed the checker
-punishing the model for denying a tag ("but does not include Fishing"), for a
-sentence-initial verb that happens to be a tag ("Experience the daily life…"),
-and for saying "Farming Sim" when `Farming` is separately a tag. All three
-inflated the number, which is the direction that looks like diligence and
-therefore never gets audited.
+auditing eight discards showed the checker punishing the model for denying a tag
+("but does not include Fishing"), for a sentence-initial verb that happens to be
+a tag ("Experience the daily life…"), and for saying "Farming Sim" when `Farming`
+is separately a tag. All three inflated the number, which is the direction that
+looks like diligence and therefore never gets audited.
 
 **New parser intents cannot go in the prompt.** It is full. Three separate edits
 each silently destroyed a working filter, so intents like "popular" and
@@ -439,51 +431,46 @@ confidently wrong one — showing horror to someone who said "nothing scary" is 
 defect, not a compromise.
 
 No model is in that loop. An agent would ask the LLM which constraint to drop;
-this asks a table, in a fixed order, with a stopping condition. It is
-reproducible, testable, free, and cannot invent a constraint that was never
-there. It runs on capped `COUNT` queries rather than retried searches, so a
-relaxed query still pays for exactly one embed and one rerank instead of three.
-Design-time measurement put a capped count at 11–24ms depending on selectivity;
-`/api/stats` since put the whole ladder at **3ms p50 over 50 sequential API
-searches**, because the 11–24ms was the worst case across scenarios and most
-queries stop at their first count. Either way it is against ~1,050ms of
-cross-encoder per retry avoided. Under 30-way concurrency it rises to 30ms, which
-is the database contending with itself, not the ladder doing more work.
+this asks a table, in a fixed order, with a stopping condition — reproducible,
+testable, free, and unable to invent a constraint that was never there. It runs
+on capped `COUNT` queries rather than retried searches, so a relaxed query still
+pays for exactly one embed and one rerank instead of three: **3ms p50 over 50
+sequential API searches**, against ~1,050ms of cross-encoder per retry avoided.
+Under 30-way concurrency it rises to 30ms, which is the database contending with
+itself rather than the ladder doing more work.
 
 **Franchise exclusion is coarse.** "excluding call of duty" is a prefix match, so
 it drops all 24 entries — sequels and spinoffs included.
 
 **It is a single-user system, and now there is a number for that.** Thirty
-concurrent searches took **209 seconds each** — against 2.4s served one at a
-time. One GPU is running Ollama's 6.6GB chat model and the in-process
-cross-encoder, FastAPI's threadpool accepts every request, and nothing limits
-how many pile onto the card: the per-request log shows single searches spending
-70–148s in parse and 62–175s in reranking. Endpoints are `def` rather than
-`async def` so no request blocks the event loop, which is the right call and
-does nothing about GPU contention. A queue with a bounded depth, and shedding
-load past it, is what this needs; there isn't one. This was found by the
-observability work rather than assumed, which is roughly the point of it.
+concurrent searches took **209 seconds each**, against 2.4s served one at a time.
+One GPU runs Ollama's 6.6GB chat model and the in-process cross-encoder,
+FastAPI's threadpool accepts every request, and nothing limits how many pile onto
+the card: the per-request log shows single searches spending 70–148s in parse and
+62–175s in reranking. Endpoints are `def` rather than `async def`, so no request
+blocks the event loop — the right call, and no help at all against GPU
+contention. What this needs is a bounded queue that sheds load; there isn't one.
+Found by the observability work rather than assumed, which is roughly the point
+of it.
 
-**`/api/stats` is a diagnostic, not telemetry.** It is a ring buffer in the
-server process: it covers the last 500 *requests* rather than a period of time,
-resets on restart, and would fragment across workers if the API were ever run
-with more than one. It also sees API traffic only, so its p50 and the median
-`run_eval` prints are different measurements and must not be quoted
-interchangeably. The one guard that stops it lying outright: **p95 is withheld
-until 21 requests**, because with nearest-rank percentiles anything below that
-returns the maximum, and labelling the maximum "p95" is wrong rather than merely
-rough. 21 is exact — at n=20 the index is still the last element. A first pass
-used 20 and the guard silently did nothing at the boundary it existed to police.
+**`/api/stats` is a diagnostic, not telemetry.** A ring buffer in the server
+process: the last 500 *requests* rather than a period of time, reset on restart,
+and fragmenting across workers if the API were ever run with more than one. It
+sees API traffic only, so its p50 and the median `run_eval` prints are different
+measurements. The one guard that stops it lying outright: **p95 is withheld until
+21 requests**, because with nearest-rank percentiles anything below that returns
+the maximum, and labelling the maximum "p95" is wrong rather than merely rough.
+21 is exact — at n=20 the index is still the last element, and a first pass used
+20, so the guard silently did nothing at the boundary it existed to police.
 
 **The eval cannot referee close calls, and now says so.** With ~100 of 118
 queries scoring identically between two good configurations, it has far less
-discriminating power than "118 labelled queries" suggests. It settled reranking
+discriminating power than "118 labelled queries" suggests: it settled reranking
 versus no reranking comfortably and could not separate two rerankers at all. A
 paired bootstrap and a sign test are the precondition for any comparison table
-here, and they now live in `eval/paired.py` with a self-test rather than in a
-scratch script — `run_eval --dump` writes per-query scores and
-`eval/compare_runs.py` pairs two of them, refusing dumps from different query
-sets or rows that do not line up.
+here, and they live in `eval/paired.py` with a self-test — `run_eval --dump`
+writes per-query scores and `eval/compare_runs.py` pairs two of them, refusing
+dumps from different query sets or rows that do not line up.
 
 ## On the numbers above
 
@@ -520,9 +507,10 @@ eval is built to resist flattering itself:
   now quoted with a paired-bootstrap interval, and the ones that cross zero are
   reported as crossing zero.
 
-[`backend/eval/failures.md`](backend/eval/failures.md) documents 39 failure modes
+[`backend/eval/failures.md`](backend/eval/failures.md) documents 42 failure modes
 with mechanisms, including several where a conclusion in this repo turned out to
-be wrong and had to be withdrawn — the most recent being a reranker written off
-as bad that turned out to be mis-invoked, and then a claimed win over the
-alternative that did not survive a significance test. [`NOTES.md`](NOTES.md) is the running log of
-what broke and what fixed it.
+be wrong and had to be withdrawn — a reranker written off as bad that turned out
+to be mis-invoked, a claimed win over the alternative that did not survive a
+significance test, and a headline recall figure that turned out to be one draw
+from a non-deterministic index build. [`NOTES.md`](NOTES.md) is the running log
+of what broke and what fixed it.

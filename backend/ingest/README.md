@@ -43,24 +43,18 @@ uv run alembic downgrade 0006     # drops ix_games_embedding_hnsw
 uv run python -m ingest.load_games --reload
 ```
 
-**`0006`, not `0004`.** This said `0004` until 2026-09-08 and that command
-**destroys every embedding in the table**: going below `0006` runs its
+**`0006`, not `0004`.** This said `0004` until 2026-09-08, and that command
+**destroys every embedding in the table**: anything below `0006` runs its
 downgrade, which re-dimensions the column back to 768 with
-`USING NULL::vector(768)` and discards all 130,651 vectors, forcing a full
-~22-minute re-embed. `downgrade 0006` runs only `0007`'s downgrade, which drops
-the index and leaves the column and its vectors alone. Check what the
-intervening revisions do before naming a target.
+`USING NULL::vector(768)`. A downgrade target names where you STOP, so check
+what the revisions in between do to data.
 
-**Drop the index first.** It is 1020MB over 130,651 vectors at 1024 dimensions,
-and a `--reload` updates every one of the 138,964 rows. Each update needs a new
-entry in every index on the table, and HNSW insertion is deliberately expensive
-— the same reason it is built after the embed job rather than before. With the
-index in place a reload runs for many minutes; without it, about three. Step 6
-rebuilds it.
+**Drop the index first.** A `--reload` updates all 138,964 rows, each needing a
+new entry in the 1020MB graph, and HNSW insertion is deliberately expensive.
+With the index in place a reload runs for many minutes; without it, about three.
 
 **`--reload` is required.** Without it the loader skips every app_id already
-present and only picks up genuinely new games — so changed prices, review
-counts and descriptions would be silently ignored.
+present, so changed prices, review counts and descriptions are silently ignored.
 
 Takes about 3 minutes for 139k games. One transaction per 1,000-game batch, so
 an interrupt costs at most one batch.
@@ -108,12 +102,10 @@ To watch it from another terminal:
 ./backend/ingest/watch_embed.sh        # poll every 2s
 ```
 
-It polls the database rather than reading the job's output, because tqdm writes
-to stderr and that is buffered and invisible when the run is backgrounded or
-piped. It also shows a live `** MIXED MODELS **` warning — the one failure
-`check_model_consistency()` exists to prevent — and prints a verification
-summary when the count reaches the total. Ctrl-C stops the watcher and never
-touches the embed job.
+It polls the database rather than the job's output, which is buffered and
+invisible when backgrounded. It also shows a live `** MIXED MODELS **` warning
+and prints a verification summary at the end. Ctrl-C stops the watcher and
+never touches the embed job.
 
 ## 7. Verify
 
@@ -150,7 +142,5 @@ VACUUM ANALYZE games;
 After changing a large fraction of the table, Postgres' row estimates are
 stale, and it may pick a bad plan for search queries.
 
-The HNSW index is rebuilt in step 6, not here. It does maintain itself on
-insert and update, but that maintenance is what makes a full reload slow, which
-is why step 4 drops it. A change of embedding model, and therefore of vector
-dimension, needs a new index definition and its own migration.
+The HNSW index is rebuilt in step 6, not here: it maintains itself on insert
+and update, and that maintenance is what makes a full reload slow.

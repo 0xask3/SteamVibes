@@ -6,25 +6,21 @@
 # them transcribed by hand would produce a typo, and a typo here looks exactly
 # like a recall failure.
 #
-# WHY A SEPARATE FILE. Recall is not comparable across query SETS, only across
-# configs on a fixed set; adding these to queries.yaml would invalidate every
-# number in README.md and CLAUDE.md. queries.yaml stays frozen at 118 and this
-# is measured beside it.
+# WHY A SEPARATE FILE. Recall is comparable across configs on a FIXED set and
+# never across sets, so adding these to queries.yaml would invalidate every
+# published number. That file stays frozen at 118; this is measured beside it.
 #
-# WHY THE SAME TARGETS. The aggregate EN/DE rows in run_eval were never a
-# language measurement: German was 37% core queries against English's 22%, so
-# part of any gap was tier mix rather than language. Holding the targets AND the
-# tier assignment fixed removes that, and target choice with it, which leaves
-# language as the only variable. Same controlled-contrast logic as `specific`
-# and `tail` being mirror samplers that differ only in review band.
+# WHY THE SAME TARGETS. run_eval's aggregate EN/DE rows were never a language
+# measurement - German was 37% core against English's 22%, so part of the gap
+# was tier mix. Holding targets and tiers fixed leaves language as the only
+# variable.
 #
-# WHAT IT IS NOT. These are German renderings of a fixed set of requests, not
-# queries collected from German players. They therefore measure the penalty for
-# asking in German rather than how Germans actually phrase things - a real
-# limitation, and the reason this is a second file rather than a replacement.
-# Genre loanwords are left in English (Roguelike, Metroidvania, Souls-like,
-# Deckbuilder, Beat 'em up) because that is how German gaming discourse writes
-# them; translating them would measure a vocabulary nobody uses.
+# WHAT IT IS NOT. German renderings of a fixed set of requests, not queries
+# collected from German players: this measures the PENALTY FOR ASKING IN
+# GERMAN, not how Germans search. Genre loanwords stay English (Roguelike,
+# Metroidvania, Souls-like, Deckbuilder) because that is how German gaming
+# discourse writes them, and translating them would measure a vocabulary
+# nobody uses.
 #
 # The 27 rows that were already German in queries.yaml carry over verbatim, so
 # for those the two files agree and the EN/DE comparison uses the other 91.

@@ -3,22 +3,15 @@
     uv run python -m eval.run_lang_eval
     uv run python -m eval.run_lang_eval --parse     # through the query parser
 
-run_eval's EN and DE rows were never a language measurement and CLAUDE.md says
-so: German was 37% `core` queries against English's 22%, so part of the gap was
-tier mix rather than language. The per-tier matrix fixed the tier mix and left
-target choice - the German queries pointed at different games.
+run_eval's EN and DE rows are not a language measurement: German is 37% `core`
+against English's 22%, so part of that gap is tier mix, and the per-tier matrix
+still leaves target choice. queries_de.yaml holds the SAME 118 targets and
+tiers asked in German, so here language is the only variable and the comparison
+is paired query by query.
 
-queries_de.yaml holds the SAME 118 targets and tiers as queries.yaml, asked in
-German. So for every row where queries.yaml is English, there is a German query
-about the same game, in the same tier, expecting the same app_ids. Language is
-the only thing that differs, and the comparison is paired query by query.
-
-THE 27 ROWS THAT WERE ALREADY GERMAN ARE EXCLUDED. Both files contain the same
-text there, so they would be ties by construction - 27 free ties that would drag
-any average toward zero and inflate the tie count in the sign test. That leaves
-91 genuine pairs, and the output says so rather than reporting n=118.
-
-Throwaway/eval category per CLAUDE.md: if it runs, it's fine.
+THE 27 ROWS THAT WERE ALREADY GERMAN ARE EXCLUDED: identical in both files,
+they would be free ties that drag the average toward zero. That leaves 91
+genuine pairs, and the output says so rather than reporting n=118.
 """
 
 import argparse

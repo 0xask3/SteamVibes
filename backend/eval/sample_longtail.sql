@@ -1,17 +1,14 @@
 -- Candidate targets for a GENUINE long-tail eval tier.
 --
--- WHY THIS EXISTS
--- All 37 core app_ids in queries.yaml have >=11,267 reviews, so recall@10 rises
+-- Every core target in queries.yaml has >=11,267 reviews, so recall there rises
 -- with the popularity weight until the long tail is gone - it cannot see the
--- cost of the thing it measures. See failures.md #26.
+-- cost of the thing it measures (failures.md #26).
 --
--- THE FIRST VERSION OF THIS FILE DID NOT FIX THAT. It used
---     SELECT DISTINCT ON (g.tags[1]) ... ORDER BY g.tags[1], total_reviews DESC
--- which returns the MOST-reviewed game per tag inside the band, i.e. the top
--- edge of the tail. The 22 targets it produced sit at the 93rd-98th percentile
--- of the corpus (median 97.1), so the tier they built rose with the popularity
--- weight instead of falling. `ORDER BY md5(app_id::text)` below is the fix:
--- an arbitrary but reproducible pick, with no correlation to review count.
+-- `ORDER BY md5(app_id::text)` is load-bearing. The first version ordered by
+-- total_reviews DESC inside the band, which returns the top EDGE of the tail:
+-- those targets sat at the 93rd-98th percentile and rose with the weight
+-- instead of falling. This picks arbitrarily but reproducibly, with no
+-- correlation to review count.
 --
 -- WHERE THE TAIL ACTUALLY IS, among the 55,120 games above REVIEW_THRESHOLD=10:
 --     11-49 reviews  24,483 (44%)     1k-5k    4,482  (8%)

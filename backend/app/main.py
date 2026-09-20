@@ -2,13 +2,11 @@
 
     cd backend && uv run uvicorn app.main:app --reload
 
-Endpoints are declared `def`, NOT `async def`, and that is deliberate. search()
-and parse_query() are synchronous and both block on network I/O - Ollama over
-HTTP plus a Postgres round-trip. Declared async they would run directly on the
-event loop and serialise every request behind the slowest one. As plain `def`,
-FastAPI hands them to its threadpool. session_scope() builds a fresh Session
-per call and httpx.Client is thread-safe, so the existing code is already
-correct under that model.
+Endpoints are `def`, NEVER `async def`: search() and parse_query() block on
+network I/O, so declared async they would run on the event loop and serialise
+every request behind the slowest one. As plain `def` they go to FastAPI's
+threadpool, which is safe because session_scope() builds a fresh Session per
+call and httpx.Client is thread-safe.
 """
 
 import logging
@@ -41,9 +39,8 @@ from app.schemas import (
 )
 from app.search import search
 
-# The parser degrades to semantic-only search on failure and logs a WARNING
-# saying so. Configured here so that line reaches the console under uvicorn
-# rather than being swallowed - CLAUDE.md wants the fallback AND the log line.
+# Configured here so the parser's fallback WARNING reaches the console under
+# uvicorn rather than being swallowed: the fallback AND the log line.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 logger = logging.getLogger(__name__)
@@ -52,22 +49,13 @@ logger = logging.getLogger(__name__)
 def _warm_models() -> None:
     """Load every model a search needs before a user asks for one.
 
-    Measured cold: 21.9s for the first search, against 0.8s warm - almost all
-    of it loading 6.6GB of chat model plus the embedder. In a browser a 22s
-    spinner is indistinguishable from a hang.
+    Cold: 21.9s for the first search against 0.8s warm, and the cross-encoder
+    adds 8.8s on top - or a 2.4GB download on a new machine. Warmed separately
+    from Ollama so neither failure hides the other, and only under
+    RANK_METHOD=rerank, because the container has no torch to import.
 
-    The cross-encoder is warmed too, and was not until a fresh-clone check. This
-    function predates stage 3, so the first search after every restart paid the
-    reranker's load plus its full-shape warm-up - 8,822ms of a 10.9s search -
-    and on a new machine a 2.4GB download on top: 124s, behind a UI hint that
-    promises about 20. Warmed separately from Ollama so that neither failure
-    hides the other, and only under RANK_METHOD=rerank: the container runs rrf
-    and has no torch to import.
-
-    This does not make cold loads disappear. OLLAMA_KEEP_ALIVE is 30m, so an
-    idle server evicts and the next search pays again; the frontend says so
-    while it waits. It moves the cost off the first user, which is where it
-    is most damaging.
+    Cold loads do not disappear: OLLAMA_KEEP_ALIVE evicts an idle model and the
+    next search pays again. This moves the cost off the first user.
     """
     started = time.perf_counter()
     try:
@@ -83,10 +71,8 @@ def _warm_models() -> None:
         return
     started = time.perf_counter()
     try:
-        # The public entry point, so this loads exactly what a search would:
-        # _load() downloads if needed, then warms at the full pool shape. A
-        # search arriving meanwhile waits on the loader's lock rather than
-        # loading a second copy.
+        # The public entry point, so this loads exactly what a search would, and
+        # a search arriving meanwhile waits on the loader's lock.
         rerank_scores("warmup", ["warmup"])
     except RerankUnavailable as exc:
         # Remembered by the loader, so searches fall back without retrying it.
@@ -110,8 +96,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Vite's dev server. Listed explicitly rather than "*" - the API is read-only
-# today, but a wildcard is a habit worth not forming.
+# Both spellings of Vite's dev server, and explicit rather than "*". On Windows
+# the browser needs localhost and the API needs 127.0.0.1.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -143,10 +129,9 @@ def health() -> dict[str, object]:
 def search_endpoint(request: SearchRequest) -> SearchResponse:
     """Natural language in, ranked games out.
 
-    Two paths. Without `parsed`, the chat model extracts filters from `query`.
-    With it, those filters are used verbatim and no model runs - that is the
-    editable-chip path, and re-parsing there would re-derive whichever chip the
-    user just deleted.
+    Without `parsed`, the chat model extracts filters. With it, they are used
+    verbatim and no model runs - the editable-chip path, where re-parsing would
+    re-derive the chip the user just deleted.
     """
     started = time.perf_counter()
 
@@ -168,13 +153,11 @@ def search_endpoint(request: SearchRequest) -> SearchResponse:
             relax_filters=request.relax,
         )
     except httpx.HTTPError as exc:
-        # Embedding is not optional the way parsing is - without a query vector
-        # there is nothing to rank. Report it as a dependency failure rather
-        # than a traceback.
+        # Embedding is not optional the way parsing is: without a query vector
+        # there is nothing to rank.
         logger.exception("embedding request failed for %r", parsed.semantic_query)
-        # Counted, because a 503 records no timings and would otherwise leave
-        # /api/stats looking healthy while every search failed. These are the
-        # only counters not read off a response - there is no response.
+        # Counted because a 503 records no timings, and /api/stats would
+        # otherwise look healthy while every search failed.
         note("search_failed_embedding")
         raise HTTPException(
             status_code=503, detail="Embedding service unavailable."
@@ -192,16 +175,10 @@ def search_endpoint(request: SearchRequest) -> SearchResponse:
 def _record_search(response: SearchResponse, started: float) -> None:
     """One log line and one metrics record per search.
 
-    Deliberately at the ENDPOINT rather than inside search(), which keeps the
-    ranking path undiluted - the same reason app/games.py is not part of
-    app/search.py. The honest cost is that the CLI and run_eval record nothing,
-    so /api/stats describes API traffic only and is not comparable with the
-    median run_eval prints.
-
-    A stage that did not run is OMITTED, never zeroed. parse_ms is None on the
-    chip path and rerank_ms is None wherever RANK_METHOD is not `rerank`;
-    recording either as 0.0 would drag that stage's p50 toward nothing and read
-    as a stage that costs nothing.
+    At the ENDPOINT, not inside search(), which keeps the ranking path
+    undiluted; the cost is that the CLI and run_eval record nothing, so
+    /api/stats covers API traffic only. A stage that did not run is OMITTED,
+    never zeroed - a 0.0 would read as a stage that costs nothing.
     """
     total_ms = (time.perf_counter() - started) * 1000
     timings = {"total_ms": total_ms}
@@ -211,15 +188,10 @@ def _record_search(response: SearchResponse, started: float) -> None:
             timings[stage] = value
     record("search", timings)
 
-    # The counters below are read off the response rather than raised at the
-    # point of failure, because every one of these already travels on it.
-    # `parse_call_failed` and `parse_bad_output` are the exceptions and are
-    # counted inside app/query_parser.py - a parse fallback returns a bare
-    # ParsedQuery and leaves no other trace.
-    #
-    # rerank_ms set with reranked False means the cross-encoder was ASKED and
-    # failed, which is failures.md #36: the search still returns the SQL
-    # ordering while every label on it says `rerank`.
+    # Read off the response, because each of these already travels on it. The
+    # parse counters are the exception and live in app/query_parser.py, whose
+    # fallback leaves no trace. rerank_ms set with reranked False means the
+    # model was ASKED and failed - failures.md #36.
     if response.rerank_ms is not None and not response.reranked:
         note("rerank_fell_back")
     if response.relaxed:
@@ -227,8 +199,7 @@ def _record_search(response: SearchResponse, started: float) -> None:
     if response.under_delivered:
         note("under_delivered")
 
-    # There was no per-request log line at all before this. At INFO, one line,
-    # every stage - so a slow search can be attributed from the server log
+    # One line, every stage, so a slow search can be attributed from the log
     # without reproducing it.
     logger.info(
         "search %r -> %d results in %.0fms (parse %s, relax %s, embed %.0f, "
@@ -249,28 +220,20 @@ def _record_search(response: SearchResponse, started: float) -> None:
 def explain_endpoint(request: ExplainRequest) -> ExplainResponse:
     """One "why this matches" line per game, verified against the database.
 
-    Separate from /api/search on purpose. Search already costs ~1.1s of
-    reranking, and an LLM call inline would push a first result list past three
-    seconds for something the user has not asked to read yet. The UI renders
-    results, then fills these in.
+    A SECOND request on purpose: an LLM call inline would hold the whole result
+    list for a sentence nobody has scrolled to. `query` must be
+    `parsed.semantic_query`, never the typed text - see ExplainRequest.
 
-    The body carries app_ids, NOT games. Name, tags and description are read
-    server-side, because a verifier grading the model against caller-supplied
-    tags would be checking the model against the caller.
-
-    Never 503s. explain() degrades a dead model to a deterministic line marked
-    `grounded=False`, which is the right answer for a feature that only
-    decorates a result list that already works.
+    Never 503s: a dead model degrades to a deterministic line marked
+    `grounded=False`.
     """
     explanations, elapsed_ms = explain(
         request.query, request.app_ids, wanted_tags=request.wanted_tags
     )
 
     record("explain", {"total_ms": elapsed_ms})
-    # The discard rate is this feature's deliverable, so it is the one number
-    # here worth counting rather than timing. Counted per EXPLANATION, not per
-    # request - a request asking about ten games and failing one is not a failed
-    # request, and rounding it to one would overstate the rate tenfold.
+    # The discard rate is this feature's deliverable. Counted per EXPLANATION,
+    # not per request, which would overstate it tenfold.
     ungrounded = sum(1 for item in explanations if not item.grounded)
     if ungrounded:
         note("explanations_ungrounded", ungrounded)
@@ -289,17 +252,9 @@ def explain_endpoint(request: ExplainRequest) -> ExplainResponse:
 def stats_endpoint() -> StatsResponse:
     """Latency percentiles and fallback counts for this process.
 
-    Read the scope fields in the body before quoting anything from it. `window`
-    is a count of REQUESTS, not a period of time; the numbers cover this process
-    only and reset on restart; and they see API traffic only, so they are not
-    the same measurement as the median run_eval prints.
-
-    p95 is null until `min_p95_samples` requests have been recorded, because
-    below that the 95th percentile IS the maximum and printing the maximum
-    under a p95 label is a wrong label rather than an imprecise number.
-
-    An in-memory read behind a lock held only for the copy, so the UI can call
-    it after every search without competing with searches.
+    Read the scope fields in the body before quoting anything: `window` counts
+    REQUESTS, the numbers are per-process, and they cover API traffic only.
+    p95 is null below `min_p95_samples`, where it would be the maximum.
     """
     return snapshot()
 

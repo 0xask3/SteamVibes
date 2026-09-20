@@ -1,7 +1,7 @@
 """SQLAlchemy 2.0 models.
 
-These mirror alembic/versions/0001_initial.py. If you change anything here you
-owe the database a migration — the models do not create tables.
+These mirror the migrations. Change anything here and you owe the database a
+migration - the models do not create tables.
 """
 
 from datetime import date, datetime
@@ -23,13 +23,9 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-# Must match the vector() dimension in the migration. nomic-embed-text emits
-# 768. Weekend 3's bge-m3 emits 1024 — changing this is a schema change, so it
-# travels with a migration, never alone.
-# Must match the vector(N) in the latest migration that touches games.embedding
-# (0006). A constant, not a setting: it is a property of the database, and any
-# change to it is a table rewrite plus a full re-embed. Every 1024-dim model
-# swaps freely; a different width does not.
+# Must match the vector(N) in the latest migration touching games.embedding
+# (0006). A constant, not a setting: changing it is a table rewrite plus a full
+# re-embed. Every 1024-dim model swaps freely; a different width does not.
 EMBEDDING_DIM = 1024
 
 
@@ -49,23 +45,18 @@ class Game(Base):
 
     release_date: Mapped[date | None] = mapped_column(Date)
 
-    # Kaggle scrapes Steam's US storefront. price_eur arrives in Weekend 3 from
-    # the storefront API with ?cc=de — do not treat this as euros.
-    #
-    # This is the price on the day of the scrape, and 37.7% of paid games were
-    # mid-sale. Filter on list_price_usd, not this.
+    # USD, and the price on the DAY OF THE SCRAPE - 37.7% of paid games were
+    # mid-sale. Filter on list_price_usd, never this.
     price_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
 
-    # Percent off at scrape time. Source stores this as str for 102,759 records
+    # Percent off at scrape time. The source stores it as str for 102,759 rows
     # and int for 36,205, so the loader coerces.
     discount_pct: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
 
-    # What the game normally costs. Derived, and approximate to about a cent:
-    # Steam rounds sale prices down, so a $14.99 game at -40% is stored as $8.99
-    # and reverses to $14.98. Immaterial for filtering, worth knowing before
-    # anyone displays it as an exact figure.
+    # What the game normally costs. Derived, and a cent low by construction:
+    # Steam rounds sale prices down, so $14.99 at -40% reverses to $14.98.
     list_price_usd: Mapped[Decimal | None] = mapped_column(
         Numeric(10, 2),
         Computed(
@@ -112,19 +103,14 @@ class Game(Base):
         Integer, nullable=False, server_default=text("0")
     )
 
-    # Denormalised from game_tags, most-voted first. game_tags stays the source
-    # of truth because it carries votes; this exists so tag filtering is
-    # `tags && ARRAY[...]` against a GIN index rather than a join and GROUP BY.
-    # Both required and excluded tags use && now - the required side was @>
-    # (all-of) until that was measured as costing recall, see failures.md #33.
-    # One GIN index serves either operator, so the switch needed no migration.
-    # NOT NULL with an empty-array default: NULL would break exclusion filters,
-    # since NOT (NULL && ARRAY['Violent']) is NULL rather than true.
+    # Denormalised from game_tags (still the source of truth, because it carries
+    # votes) so tag filtering is `tags && ARRAY[...]` against a GIN index. NOT
+    # NULL with an empty default: NOT (NULL && ARRAY[...]) is NULL, not true,
+    # which would break exclusion filters.
     #
-    # Must be the postgresql dialect ARRAY, not sqlalchemy.ARRAY: only the
-    # dialect type implements .contains() (@>) and .overlap() (&&). The base
-    # type raises NotImplementedError at runtime, and mypy does not catch it.
-    # Same DDL either way (text[]), so no migration is involved.
+    # Must be the postgresql dialect ARRAY, never sqlalchemy.ARRAY: only the
+    # dialect type implements .contains() and .overlap(), the base type raises
+    # at runtime, and mypy does not catch it. Same DDL, so no migration.
     tags: Mapped[list[str]] = mapped_column(
         ARRAY(Text), nullable=False, server_default=text("'{}'::text[]")
     )
@@ -136,16 +122,14 @@ class Game(Base):
     developers: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     publishers: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
 
-    # The exact string handed to the embedding model. Stored so a bad result
-    # can be traced to what was actually embedded, and so Weekend 3 re-embeds
-    # identical text rather than rebuilding it and drifting.
+    # The exact string handed to the embedding model, stored so a bad result can
+    # be traced to what was embedded and so a re-embed cannot drift.
     embed_text: Mapped[str | None] = mapped_column(Text)
 
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
 
-    # NULL embedding means "not embedded yet" — that is what makes the embed
-    # job resumable. These two say which model produced the vector and when,
-    # so stale rows are identifiable after a model swap.
+    # A NULL embedding means "not embedded yet", which is what makes the job
+    # resumable. These two identify stale rows after a model swap.
     embedding_model: Mapped[str | None] = mapped_column(Text)
     embedded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -167,11 +151,9 @@ class Game(Base):
         Index("ix_games_total_reviews", "total_reviews"),
         # Tag filtering: tags && ARRAY[...] and NOT tags && ARRAY[...].
         Index("ix_games_tags_gin", "tags", postgresql_using="gin"),
-        # Declared so `alembic check` sees the models and the database agree.
-        # Created by migration 0003 and rebuilt by 0005 rather than here -
-        # models never create tables. Leaving it undeclared meant autogenerate
-        # would propose dropping it. vector_cosine_ops must match the <=>
-        # operator in app/search.py.
+        # Declared so `alembic check` sees models and database agree: undeclared,
+        # autogenerate would propose dropping a 1GB index. Built by the
+        # migrations, and vector_cosine_ops must match search.py's operator.
         Index(
             "ix_games_embedding_hnsw",
             "embedding",
@@ -233,10 +215,10 @@ class GameGenre(Base):
 
 
 class GameCategory(Base):
-    """Steam's own categories — 'Multi-player', 'Co-op', 'Steam Achievements'.
+    """Steam's own categories - 'Multi-player', 'Co-op', 'Steam Achievements'.
 
-    Weekend 2's `multiplayer` filter reads these; they are more reliable for
-    that than community tags.
+    The `multiplayer` filter reads these, which are more reliable than
+    community tags.
     """
 
     __tablename__ = "game_categories"

@@ -5,21 +5,10 @@
     uv run python -m eval.run_eval --limit 20       # recall@20
     uv run python -m eval.run_eval --misses         # show what was not found
 
-This is the number that decides whether a change helped. Two hypotheses were
-killed by measurement this project (failures.md #19, #20) and one prompt edit
-was reverted after it silently cost a filter (#22) - but all of that used
-compare_parsers.py, which only inspects the ParsedQuery and never looks at
-which games come back. This closes that gap.
-
-recall@10 = (expected app_ids found in top 10) / (expected app_ids)
-
-Averaged per query, not pooled, so a query expecting one game counts the same
-as one expecting three. Ground truth is deliberately incomplete: `expect` holds
-results confident enough that missing one is a real failure, not every game
-that would be reasonable. So treat the absolute number as a baseline to move,
-not as a percentage of correctness.
-
-Throwaway/eval category per CLAUDE.md: if it runs, it's fine.
+recall@10 = (expected app_ids found in top 10) / (expected app_ids), averaged
+PER QUERY rather than pooled. Ground truth is deliberately incomplete - it
+holds answers confident enough that missing one is a real failure - so the
+absolute number is a baseline to move, not a percentage of correctness.
 """
 
 import argparse
@@ -50,13 +39,9 @@ class Case:
         self.lang: str = raw.get("lang", "en")
         self.expect: set[int] = set(raw["expect"])
         self.note: str | None = raw.get("from")
-        # Three tiers, measuring three different things. "core" is short genre
-        # labels answered by famous games; "specific" is a detailed description
-        # with one right answer; "tail" is the same but the answer has 36-293
-        # reviews. Only "tail" can see what a ranking change deletes - the other
-        # two are entirely above the 93rd percentile by review count, so recall
-        # on them rises with a popularity weight regardless of its cost. See the
-        # queries.yaml headers.
+        # `core` (short genre labels), `specific` (a detailed description with
+        # one right answer) and `tail` (the same, but the answer has 30-300
+        # reviews). Only `tail` can see what a ranking change deletes.
         self.tier: str = raw.get("tier", "core")
 
     def recall(self, returned: list[int], limit: int) -> tuple[float, set[int]]:
@@ -95,11 +80,8 @@ def main() -> None:
     argp.add_argument("--limit", type=int, default=10, help="The k in recall@k.")
     argp.add_argument("--threshold", type=int, default=None, help="Min reviews.")
     argp.add_argument("--misses", action="store_true", help="List what was missed.")
-    # A DIFFERENT FILE IS A DIFFERENT MEASUREMENT, not a variant of this one.
-    # Recall compares configs on a FIXED set; two sets are never comparable to
-    # each other. queries_de.yaml exists so the German set can grow without
-    # invalidating every number measured on queries.yaml - it holds the same 118
-    # targets and tiers and changes only the language.
+    # A DIFFERENT FILE IS A DIFFERENT MEASUREMENT, never a variant of this one:
+    # recall compares configs on a FIXED set, and never across sets.
     argp.add_argument(
         "--queries",
         type=Path,
@@ -109,9 +91,7 @@ def main() -> None:
         "the same targets asked in German.",
     )
     # Per-query scores, so two runs can be compared PAIRED rather than by their
-    # averages. CLAUDE.md has required a paired bootstrap and sign test before
-    # any comparison table since #37, and until now that lived in a scratch
-    # script. eval/compare_runs.py consumes these.
+    # averages. eval/compare_runs.py consumes these.
     argp.add_argument(
         "--dump",
         type=Path,
@@ -122,15 +102,12 @@ def main() -> None:
 
     logging.basicConfig(level=logging.ERROR)  # the table is the output
 
-    # A results table produced against a corpus embedded by a different model is
-    # worse than no table: it looks exactly like a model comparison. Checked
-    # here because this file's whole job is deciding whether a change helped.
+    # A table produced against a corpus embedded by a different model, or half
+    # embedded, is worse than no table: it looks exactly like a config result.
     verify_corpus_model()
     verify_corpus_complete()
-    # Same class of invisible mismatch, one layer out: TEI serves whatever model
-    # its container started with, the backend cannot tell, and a container left
-    # running from the previous bake-off arm answers every request happily. That
-    # difference would be written into a table as a model result.
+    # Same invisible mismatch one layer out - a model that loads but cannot
+    # score reproduces the baseline under its own label.
     if settings.rank_method == "rerank":
         verify_rerank_model()
 
@@ -149,24 +126,17 @@ def main() -> None:
     mode_label = "parsed" if args.parse else "semantic only"
     threshold = settings.review_threshold if args.threshold is None else args.threshold
     print(f"\n{len(cases)} queries | recall@{args.limit} | {mode_label}")
-    # The SET belongs on this line as much as the model does. Two sets are never
-    # comparable to each other, so a table that does not say which one produced
-    # it is not reproducible - and queries_de.yaml has the same size, the same
-    # tiers and the same targets as queries.yaml, so nothing else on screen
-    # would distinguish them.
+    # The SET belongs here as much as the model does: queries_de.yaml has the
+    # same size, tiers and targets, so nothing else on screen tells them apart.
     print(f"set:   {args.queries.name}")
-    # Self-labelling: these decide the numbers below, and a results table
-    # pasted into NOTES.md without them is not reproducible. The ranking line
-    # matters as much as the model: "18.3%" means nothing without knowing
-    # whether a popularity term produced it.
+    # Self-labelling, because a table pasted into NOTES.md without these is not
+    # reproducible - "18.3%" means nothing without the ranking line.
     rank: str = settings.rank_method
     if settings.rank_method == "log":
         rank = f"log (w={settings.popularity_weight})"
     elif settings.rank_method == "rrf":
         rank = f"rrf (w={settings.popularity_weight}, k={settings.rrf_k})"
     elif settings.rank_method == "rerank":
-        # The reranker model belongs on this line for the same reason the embed
-        # model does: a table pasted into NOTES.md without it is not reproducible.
         rank = (
             f"rerank {settings.rerank_model} "
             f"(w={settings.popularity_weight}, k={settings.rrf_k})"
@@ -187,12 +157,9 @@ def main() -> None:
             else ParsedQuery(semantic_query=case.query)
         )
         start = time.perf_counter()
-        # relax_filters=False is NOT a detail. Recall is measured against a
-        # FIXED filter set, and a harness that quietly widened filters whenever
-        # a query returned little would report the relaxation as retrieval
-        # quality. The no-parse path would never trigger it - no filters means
-        # 55,120 rows pass - but --parse would, and a number that only
-        # sometimes includes a second mechanism is the worst kind.
+        # relax_filters=False is not a detail: a harness that widened filters
+        # when a query returned little would report relaxation as retrieval
+        # quality. --parse would trigger it.
         response = search(
             parsed,
             limit=args.limit,
@@ -221,10 +188,8 @@ def main() -> None:
     print("-" * 70)
 
     # A run where ANY query fell back is not a weaker measurement of this model,
-    # it is a measurement of the baseline wearing this model's label. Refuse it
-    # rather than print a table somebody will paste into NOTES.md. Partial
-    # counts matter too: 3 fallbacks out of 118 would move a number by more than
-    # the reproducibility floor and look like a result.
+    # it is the baseline wearing this model's label. Three fallbacks out of 118
+    # would move a number by more than the reproducibility floor.
     if fell_back:
         raise SystemExit(
             f"\nREFUSING TO REPORT: the cross-encoder failed on {fell_back} of "
@@ -241,33 +206,22 @@ def main() -> None:
         if scores[lang]:
             row(f"{lang.upper()}, n={len(scores[lang])}", scores[lang])
 
-    # NOT comparable to each other. Core queries are short genre labels whose
-    # ground truth names 2-3 famous games out of hundreds that would satisfy the
-    # query, so core recall understates quality; "specific" and "tail" have
-    # exactly one right answer by construction. Compare a tier against itself
-    # across configs, never one tier against another.
-    #
-    # Read "tail" when judging a ranking change. Core and specific targets are
-    # all above the 93rd percentile by review count, so recall on them rises
-    # with a popularity weight whatever it costs - that is not evidence, it is
-    # the ground truth's bias paid back to itself. "tail" targets sit at the
-    # 37th-75th percentile of the searchable corpus, so a weight that buries the
-    # long tail shows up here as a fall. Its absolute value is not a quality
-    # number; only its slope is. See failures.md #26-28.
+    # The tiers are NOT comparable to each other - core understates quality,
+    # because its ground truth names 2-3 famous games out of hundreds that would
+    # do. Compare a tier against itself across configs, and judge a RANKING
+    # change on `tail`: core and specific targets sit above the 93rd percentile
+    # by reviews, so recall on them rises with a popularity weight whatever it
+    # costs. See failures.md #26-28.
     for tier in ("core", "specific", "tail"):
         if tiers[tier]:
             row(f"{tier}, n={len(tiers[tier])}", tiers[tier])
 
     row("overall", scores["en"] + scores["de"])
 
-    # The EN/DE rows above are NOT a language measurement on their own: the two
-    # sets do not have the same tier mix. German is 37% core queries against
-    # English's 22%, and core scores about a quarter of what the other tiers do,
-    # so a chunk of any aggregate gap is composition rather than language. Read
-    # this matrix instead. Measured on arctic at w=0.20 the aggregate gap was
-    # 24.3 points while the per-tier gaps were 4.2 / 30.2 / 12.5 - same data,
-    # three different stories. Cells are small (8-10 German queries per tier),
-    # so one query is 10-12 points here; treat a single row as a hint.
+    # The EN/DE rows above are NOT a language measurement: German is 37% `core`
+    # against English's 22%, so part of any gap is tier mix. Read this matrix,
+    # and treat a single row as a hint - one query is 10-12 points in these
+    # cells. eval/run_lang_eval.py is the unconfounded comparison.
     print()
     print(f"{'  by tier and language':<24}{'EN':>14}{'DE':>14}{'gap':>9}")
     for tier in ("core", "specific", "tail"):
@@ -281,29 +235,19 @@ def main() -> None:
         )
     print()
 
-    # Counter-metric, and the honest one. recall@k cannot see what a popularity
-    # weight DELETES, because ground truth is a list of games somebody thought
-    # of - and people think of famous games. Worse, a labelled long-tail tier
-    # does not fix that on its own: if the query paraphrases the game's own
-    # description the target sits at cosine rank ~1, where a popularity term is
-    # too small to dislodge it, so the tier reports "no harm" by construction.
-    #
-    # This needs no labels and no query authorship, so neither bias reaches it.
-    # It just asks how obscure the returned results actually are. Context: the
-    # review threshold already removes 58% of the corpus, and of the 55,120
-    # games that remain 69% have under 200 reviews. If those never come back,
-    # the long tail is not being searched - which is the product. See
-    # failures.md #26.
+    # The counter-metric, and it needs no labels at all - which is the point,
+    # since recall@k cannot see what a popularity weight DELETES: ground truth
+    # is a list of games somebody thought of, and people think of famous games.
+    # This just asks how obscure the returned results are. See failures.md #26.
     if returned_reviews:
         under_1k = sum(n < 1000 for n in returned_reviews) / len(returned_reviews)
         median_revs = int(statistics.median(returned_reviews))
         print(f"  median reviews returned:{median_revs:>9,}")
         print(f"  results under 1k reviews:{under_1k:>8.0%}")
     print(f"  median search latency:{statistics.median(elapsed) * 1000:>10.0f}ms")
-    # Split out because the reranker's entire trade is recall against latency,
-    # and the line above hides it inside a total that also carries the embed
-    # call. p95 as well as median: a reranker that is usually fast and
-    # occasionally slow is a different product from one that is evenly slow.
+    # Split out because the reranker's whole trade is recall against latency.
+    # p95 too: usually-fast-sometimes-slow is a different product from evenly
+    # slow.
     if rerank_times:
         ordered = sorted(rerank_times)
         p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
@@ -313,10 +257,8 @@ def main() -> None:
         )
 
     if args.dump is not None:
-        # The CONFIG travels with the scores. A dump that does not say which
-        # model, set and rank method produced it is unpairable a week later, and
-        # compare_runs.py refuses to compare two dumps from different sets -
-        # recall is comparable across configs on a fixed set, never across sets.
+        # The CONFIG travels with the scores, so a file found a week later still
+        # says what produced it - and compare_runs.py can refuse two sets.
         args.dump.write_text(
             json.dumps(
                 {

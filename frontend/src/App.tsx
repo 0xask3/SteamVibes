@@ -28,15 +28,14 @@ export default function App() {
   // Keyed by app_id and filled in AFTER results render. A second request, so
   // the list is not held back by an LLM call for text nobody has scrolled to.
   const [why, setWhy] = useState<Record<number, VerifiedExplanation>>({});
-  // Server-side percentiles for the diagnostics panel. Refreshed after each
-  // search rather than polled: the interesting moment is right after a request
-  // lands, and an in-memory read on a timer would be motion for its own sake.
+  // Refreshed after each search rather than polled: the interesting moment is
+  // right after a request lands.
   const [serverStats, setServerStats] = useState<StatsResponse | null>(null);
 
   /**
-   * A warm search is ~0.8s. A cold one is ~22s, because Ollama has to page
-   * 6.6GB of chat model into VRAM - it evicts after 30 minutes idle. Without
-   * this the user just watches a spinner and reasonably concludes it broke.
+   * A warm search is ~0.8s; a cold one is ~22s while Ollama pages 6.6GB of
+   * chat model into VRAM. Without this the user watches a spinner and
+   * reasonably concludes it broke.
    */
   useEffect(() => {
     if (!loading) return;
@@ -52,11 +51,9 @@ export default function App() {
   async function runSearch(text: string, parsed?: ParsedQuery) {
     if (!text.trim()) return;
     setLoading(true);
-    // Reset here rather than in the effect below. Clearing it there is a
-    // setState called synchronously during an effect, which schedules a second
-    // render for something the event already knows - oxlint flags it, and the
-    // event that starts a search is the honest place to clear a "this is
-    // taking a while" flag.
+    // Reset here rather than in the effect below: clearing it there is a
+    // setState during an effect, which oxlint flags, and the event that starts
+    // a search is the honest place to clear a "taking a while" flag.
     setSlow(false);
     setError(null);
     try {
@@ -66,8 +63,7 @@ export default function App() {
       // explanations sit under the new search's games for a second.
       setWhy({});
       if (result.results.length > 0) {
-        // Deliberately not awaited into the loading state: results are already
-        // on screen and useful. explain() swallows its own failures.
+        // Not awaited into the loading state: the results are already useful.
         void explain({
           // semantic_query, NOT the typed query: given "on linux" the model
           // cannot see platforms and denies Linux for every result. See
@@ -83,8 +79,7 @@ export default function App() {
           setWhy(Object.fromEntries(payload.explanations.map((e) => [e.app_id, e])));
         });
       }
-      // Never awaited and never able to fail the search - stats() swallows its
-      // own errors, exactly like explain().
+      // Never awaited, and stats() swallows its own errors like explain().
       void stats().then(setServerStats);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");

@@ -1,14 +1,11 @@
 /**
- * Server-side latency, from GET /api/stats.
+ * Server-side latency, from GET /api/stats. Small and collapsed by default: a
+ * diagnostic, not a feature, but the reranker is bought with latency and a
+ * cost nobody can see is a cost nobody can argue about.
  *
- * BUILD_PLAN item 6 asks for "a small panel". Small is the point: the reranker
- * is bought with latency, and a cost nobody can see is a cost nobody can argue
- * about. Collapsed by default because it is a diagnostic, not a feature.
- *
- * The design constraint that shaped every line below: THESE NUMBERS ARE THE
- * EASIEST IN THE PROJECT TO QUOTE WRONGLY. So `n` sits beside every figure, a
- * withheld p95 renders as a reason rather than a blank, and the scope - last N
- * requests, this process, API traffic only - is on screen rather than in a
+ * THESE NUMBERS ARE THE EASIEST IN THE PROJECT TO QUOTE WRONGLY, which shaped
+ * every line below: `n` sits beside every figure, a withheld p95 renders as a
+ * reason rather than a blank, and the scope is on screen rather than in a
  * docstring nobody reading the panel will open.
  */
 

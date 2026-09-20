@@ -4,12 +4,9 @@
     uv run python search.py "co-op base builder under 20 dollars on linux" --parse
     uv run python search.py "something for a kid" --max-age 7 --exclude-tag Violent
 
-Presentation only. The ranking lives in app/search.py, so this and the API
-serve identical logic rather than two copies of it.
-
---parse asks the chat model to fill the ParsedQuery; the flags fill the same
-object by hand and override anything it decided. Keeping the unparsed path is
-what makes the parser's contribution measurable rather than assumed.
+Presentation only: the ranking lives in app/search.py, so this and the API
+serve identical logic. --parse asks the chat model to fill the ParsedQuery; the
+flags fill the same object by hand and override anything it decided.
 """
 
 import argparse
@@ -33,10 +30,8 @@ def format_price(result: SearchResult) -> str:
 
 
 def print_result(rank: int, result: SearchResult) -> None:
-    # Show the ranking key alongside the similarity whenever they differ.
-    # Similarity alone reads as a bug once a popularity term is ordering the
-    # list: the printed numbers are not monotonic and nothing on screen says
-    # why. Equal values mean rank_method is "none".
+    # Both keys whenever they differ: similarity alone reads as a bug once a
+    # popularity term orders the list, because it is no longer monotonic.
     marks = f"{result.score:.3f}"
     if result.rank_score != result.score:
         marks = f"sim {result.score:.3f}  rank {result.rank_score:.4f}"
@@ -118,17 +113,15 @@ def build_parsed_query(args: argparse.Namespace) -> ParsedQuery:
     elif args.singleplayer:
         multiplayer = False
 
-    # --parse asks the model; without it the query is treated as pure vibe and
-    # only explicit flags filter. Keeping the unparsed path is what makes the
-    # parser's contribution measurable rather than assumed.
+    # Without --parse the query is pure vibe and only explicit flags filter,
+    # which is what makes the parser's contribution measurable.
     if args.parse:
         base = parse_query(args.query, model=args.model)
     else:
         base = ParsedQuery(semantic_query=args.query)
 
-    # Explicit flags win over anything the model decided. This is BUILD_PLAN's
-    # editable filter chips in CLI form: the parser's choices are visible and
-    # correctable rather than silently applied.
+    # Explicit flags win over anything the model decided - the editable filter
+    # chips in CLI form, so its choices are correctable rather than silent.
     if args.max_price is not None:
         base.max_price_usd = args.max_price
     if args.min_price is not None:

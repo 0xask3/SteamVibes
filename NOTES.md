@@ -7,1177 +7,722 @@ What broke, what I tried, what fixed it. Newest first.
 ## 2026-09-19 - 68.8% was one draw from a non-deterministic index build
 
 **What broke.** The real database scored 67.1% overall against the README's
-68.8%, with no known change to the recall path. Two English queries had lost
-their target and the German set had gained one.
+68.8%, with no change to the recall path.
 
 **What I tried.** Ruled out everything else with a test each: a re-embed of 256
 rows was bit-identical to the stored vectors across the Ollama upgrade; pgvector,
-the libraries and the recall-path code were unchanged; batch size and VRAM
-pressure changed nothing. Then copied the database and rebuilt the index twice
-through migration 0007: 67.9% and 66.8%. The parallel build is not deterministic
-and my accidental rebuild last session had drawn a worse graph. A single-worker
-build is repeatable, but that fixes reproducibility and leaves the recall where
-it was.
+the libraries and the code were unchanged; batch size and VRAM changed nothing.
+Then copied the database and rebuilt the index twice through 0007: 67.9% and
+66.8%. The parallel build is not deterministic, and last session's accidental
+rebuild had drawn a worse graph.
 
-**What fixed it.** `HNSW_EF_SEARCH` 200 -> 800, chosen by sweeping 200-1000 over
+**What fixed it.** `HNSW_EF_SEARCH` 200 -> 800, from a sweep of 200-1000 over
 three independent builds: 800 is the smallest value where they agree on every
 query of both sets and match 1000. Not 600, which scored 0.3 higher only because
 it was still approximate on one query. EN +4.4% [+1.0, +8.5], `tail` +9.1%, DE
-+2.5%; filtered SQL median 16 -> 23ms. failures.md #42 has the whole table.
++2.5%; filtered SQL median 16 -> 23ms. failures.md #42 has the table.
 
 ## 2026-09-19 - The reranker's batch default filled the card on its own
 
 **What broke.** A fresh-clone `run_eval` only reproduced the README's latency
-after `ollama stop qwen3.5:9b`; with the chat model resident the rerank p95 was
-8-9s instead of 1.4s. `RERANK_BATCH_SIZE=128` was never measured, and its
-comment claimed it sat comfortably beside the chat model and traded VRAM for
-throughput. At 128 one run peaked the whole 16GB card at 15.9GB and spilled.
+after `ollama stop qwen3.5:9b`. `RERANK_BATCH_SIZE=128` was never measured and
+peaked the whole 16GB card at 15.9GB, spilling to rerank p95 8-9s.
 
-**What I tried.** Probed 128/64/32/16 on 30 real queries, in both orders, then
-full EN and DE runs at 128 and 32 with the chat model pinned resident for all of
-them. Smaller batches were FASTER, not slower (most likely padding: every batch
-is padded to its longest pair). But 16 moved the top-10 on 13 of 30 queries,
-and a top-10 id comparison over all 236 queries found 32 reordering adjacent
-near-ties inside 4 of them - the probe had said "identical" because it only saw
-30. Each size is deterministic run to run, so it is the fp16 arithmetic of a
-different batch shape, not noise.
+**What I tried.** Probed 128/64/32/16 on 30 queries in both orders, then full EN
+and DE runs at 128 and 32 with the chat model pinned resident. Smaller batches
+were FASTER, not slower - most likely padding, since every batch is padded to its
+longest pair. But 16 moved the top-10 on 13 of 30 queries, and a top-10 id
+comparison over all 236 found 32 reordering near-ties inside 4 of them; the
+30-query probe had called that "identical". Each size is deterministic run to
+run, so it is fp16 arithmetic, not noise.
 
-**What fixed it.** Default 32. Same top-10 SETS on all 236 queries, so recall is
-identical - `compare_runs` 0 wins, 0 losses, 118 ties on each set. With the chat
-model resident: rerank median 1,033 -> 763ms, p95 6,747 -> 886ms, peak 15.9 ->
-13.4GB, and the EN eval runs in 108s instead of 240. Unloaded: 791-826ms against
-the README's 1,021. The batch is no longer described anywhere as speed-only.
+**What fixed it.** Default 32: same top-10 SETS on all 236 queries, so recall is
+identical (`compare_runs` 0W 0L, 118 ties each). Rerank median 1,033 -> 763ms,
+p95 6,747 -> 886ms, peak 15.9 -> 13.4GB. The batch is no longer described
+anywhere as speed-only.
 
 ## 2026-09-19 - The first search after every restart paid for the reranker
 
 **What broke.** On a fresh clone run from source, the first search took 124s,
-122s of it in "reranking", while the UI promised about 20. The cross-encoder
-loads lazily on first use, and on a new machine that includes a 2.4GB download
-(`model.safetensors` is fp32; 1.2GB is its size in VRAM, which is where the
-figure in my first report came from). Even with the model cached, every restart
-made its first search pay 8,822ms of load plus full-shape warm-up - 10.9s
-against 2.1s for the next one.
+122s of it "reranking", while the UI promised about 20. The cross-encoder loads
+lazily, and on a new machine that includes a 2.4GB download. Even cached, every
+restart made its first search pay 8,822ms of load plus warm-up.
 
-**What I tried.** Looked for why `_warm_models()`, which exists precisely to
-keep cold loads off the first user, did not cover this. It warms the embedder
-and the chat model and was written before the reranker existed.
+**What I tried.** Looked for why `_warm_models()`, which exists precisely to keep
+cold loads off the first user, did not cover it. It warms the embedder and the
+chat model, and was written before stage 3 existed.
 
-**What fixed it.** `_warm_models()` warms the cross-encoder too, through the
-same `rerank_scores()` a search uses, only under `RANK_METHOD=rerank` and in its
-own try so an Ollama failure cannot skip it. Measured: `cross-encoder warm in
-8.2s` at boot, first search 2.5s. With an empty Hub cache the health check still
-answers in 4ms during the download, and a search sent mid-download waits on the
-loader's lock and returns reranked - one load, not two. Inside the real backend
-image, rrf never imports torch, and a misconfigured `rerank` logs a warning
-instead of crashing.
+**What fixed it.** It now warms the cross-encoder too, through the same
+`rerank_scores()` a search uses, only under `RANK_METHOD=rerank` and in its own
+try so an Ollama failure cannot skip it. Measured: warm in 8.2s at boot, first
+search 2.5s. With an empty Hub cache health still answers in 4ms during the
+download, and a search sent mid-download waits on the loader's lock - one load,
+not two.
 
 ## 2026-09-19 - The container cached the tags of an empty database
 
-**What broke.** A full fresh-clone run of the README found the containerised API
-extracting NO tags after ingest - the headline query came back with price,
-platform and multiplayer but no `required_tags`, where the README promises
-`[Co-op, Survival, Crafting, Base-Building]`. `get_tag_vocabulary()` was an
-`lru_cache`, `docker compose up` starts the API before ingest, and the startup
-warmup parses a query - so it cached `()` for the life of the process. The
-explanation verifier reads the same list for its prose check, so that went blind
-too. Nothing was logged; the response looked like a query with no tag intent.
+**What broke.** A fresh-clone run found the containerised API extracting NO tags
+after ingest. `get_tag_vocabulary()` was an `lru_cache`, `docker compose up`
+starts the API before ingest, and the startup warmup parses a query - so it
+cached `()` for the life of the process. The explanation verifier reads the same
+list, so that went blind too. Nothing was logged.
 
 **What I tried.** Proved the mechanism before touching code: restarting only the
-backend container, with nothing else changed, restored the README's tags
-exactly. Then measured whether the cache was worth keeping at all - the read is
-52ms against a ~1,200ms parse, so yes - and found the narrower version of the
-same bug: 2,000 loaded games already carry 425 of the 452 tags, so a search
-during the 3-minute load would have pinned a list missing 27 tags.
+backend container restored the README's tags exactly. Then measured whether the
+cache was worth keeping (the read is 52ms against a ~1,200ms parse, so yes) and
+found the narrower version of the same bug - 2,000 loaded games already carry 425
+of the 452 tags, so a search during the load would pin a list missing 27.
 
-**What fixed it.** An empty vocabulary is never cached and logs a WARNING every
-time it is read; a non-empty one expires after 5 minutes (`VOCABULARY_TTL_S`).
-Verified in one uvicorn process against a scratch database, relaxation off:
-empty -> no tags and the warning; `load_games --limit 2000` with the server still
-running; same query -> exactly `[Co-op, Survival, Crafting, Base-Building]`, no
-restart. On the real database the list is byte-identical to before, so the
-parser prompt did not change.
+**What fixed it.** An empty vocabulary is never cached and logs a WARNING; a
+non-empty one expires after `VOCABULARY_TTL_S`. Verified against a scratch
+database: empty -> no tags plus the warning; `load_games --limit 2000` with the
+server still running; same query -> the exact documented tags, no restart.
 
 ## 2026-09-18 - The documented setup path ended in a SystemExit
 
-**What broke.** README step 2 is `docker compose up -d`, whose backend container
-runs `alembic upgrade head`. The last migration, 0007, BUILDS the HNSW index -
-so a brand-new empty database arrives with `ix_games_embedding_hnsw` already
-present. README step 3 then runs `embed_all`, whose very first call is
-`check_hnsw_absent()`, which exits 1:
+**What broke.** README step 2 (`docker compose up -d`) runs `alembic upgrade
+head`, and 0007 BUILDS the HNSW index - so a brand-new database arrives with the
+index present. Step 3's `embed_all` then refuses to start, correctly, because
+writing 130k vectors with it in place rebuilds the graph row by row. The
+documented happy path had been wrong since the compose services were added.
 
-    ix_games_embedding_hnsw exists. Writing 130k vectors with it in place
-    rebuilds the graph row by row.
+**What I tried.** Proved it rather than read it: cloned to a temp dir, brought up
+an isolated Postgres on 5433 under a separate compose project, confirmed the
+index exists on an empty database, then ran the corrected sequence end to end -
+downgrade 0006, load_games (3m08s, exact documented counts), embed_all, upgrade
+head.
 
-The guard is right. The documented happy path was wrong, and had been since the
-compose services were added - every new clone would have failed at the last
-step. CLAUDE.md's one-line ingest summary omitted the same two commands, while
-ingest/README.md (the refresh guide) had them all along.
+**What fixed it.** The two alembic lines are in README step 3 with the refusal
+quoted, plus "stop at 0006, never lower". CLAUDE.md's summary carries them too.
 
-**What I tried.** Proved it rather than read it: cloned the repo to a temp dir,
-brought up an isolated Postgres on 5433 under a separate compose project,
-confirmed 0 tables, ran `alembic upgrade head`, and confirmed the index exists
-on an empty database. Then ran the corrected sequence end to end against that
-same fresh database - downgrade 0006, load_games (3m08s, 138,964 games and the
-exact documented row counts), embed_all --limit 500 (ran, where it had refused),
-upgrade head (index back, revision 0007).
-
-**What fixed it.** The two alembic lines are now in README step 3 with the
-refusal quoted and the reason given, plus the "stop at 0006, never lower"
-warning. CLAUDE.md's summary now carries them too.
-
-**And a mistake of my own, worth more than the bug.** While testing I wrote
-`cd backend && export DATABASE_URL=...` from a directory that was already
-`backend`. The `cd` failed, `&&` short-circuited, the export never ran - and the
-`alembic downgrade 0006` that followed hit the REAL database on 5432 instead of
-the test one on 5433. It dropped the production HNSW index. Recovered fully with
-`alembic upgrade head` (1020MB, revision 0007, all 130,651 arctic vectors
-intact) because 0007's downgrade only drops an index; one revision lower and it
-would have destroyed the corpus. CLAUDE.md already warned that a chained
-`cd backend && ...` silently skipped a config edit once before. Same trap, worse
-blast radius. Set the variable on its own line, and verify which database you
-are pointed at before running a downgrade.
+**And a mistake of my own, worth more than the bug.** I wrote `cd backend &&
+export DATABASE_URL=...` from a directory already named `backend`. The `cd`
+failed, `&&` short-circuited, the export never ran, and the `alembic downgrade
+0006` that followed hit the REAL database. It dropped the production index.
+Recovered with `upgrade head` because 0007's downgrade only drops an index; one
+revision lower would have destroyed the corpus. Set the variable on its own line,
+and verify which database you are pointed at before any downgrade.
 
 ---
 
 ## 2026-09-08 - The refresh guide told you to delete every embedding
 
-**What broke.** Nothing yet, which is the point - this was found by a cleanup
-pass, not by running it. `ingest/README.md` step 4 said to drop the HNSW index
-before a `--reload` with:
+**What broke.** Nothing yet, which is the point - found by a cleanup pass.
+`ingest/README.md` said `alembic downgrade 0004` to drop the HNSW index. The
+comment is true and the command is a disaster: downgrading to 0004 runs 0006's
+downgrade on the way, re-dimensioning `games.embedding` to 768 with
+`USING NULL::vector(768)` and discarding all 130,651 vectors.
 
-    uv run alembic downgrade 0004     # drops ix_games_embedding_hnsw
+**What I tried.** Read the chain rather than the target: 0007 is the revision
+that builds the CURRENT index, so the correct stopping point is 0006. CLAUDE.md
+already said 0006; the ingest guide had drifted and nothing cross-checked them.
 
-That comment is true and the command is a disaster. Downgrading to 0004 runs
-0006's downgrade on the way, which re-dimensions games.embedding back to 768
-with `USING NULL::vector(768)` - discarding all 130,651 vectors and forcing a
-full ~22-minute re-embed. The instruction sat in the routine-maintenance guide,
-under a heading about a performance optimisation.
-
-**What I tried.** Read the chain rather than the target: 0003 builds HNSW, 0004
-adds required_age and tags, 0005 rebuilds HNSW, 0006 re-dimensions to 1024,
-0007 rebuilds HNSW at 1024. The revision that drops the CURRENT index is 0007,
-so the correct target is `downgrade 0006`. CLAUDE.md already said 0006; the
-ingest guide had drifted and nothing cross-checked them.
-
-**What fixed it.** `downgrade 0006`, plus a paragraph in the guide saying what
-0004 would have done and why, so the next person editing it knows the number is
-load-bearing. The general lesson: an alembic downgrade target names where you
-STOP, not what you undo, so every revision between here and there runs. Name the
-revision immediately below the one you want reverted, and check what the ones in
-between do to data - a migration that is purely additive on the way up can be
-destructive on the way down.
-
----
+**What fixed it.** `downgrade 0006`, plus a paragraph saying what 0004 would have
+done. The general lesson: a downgrade target names where you STOP, not what you
+undo, so every revision in between runs - check what they do to DATA, because a
+migration that is purely additive upward can be destructive downward.
 
 ## 2026-09-08 - The bigger German set answered the question, and the answer was no
 
 **What broke.** Nothing. This closed the one deferred claim in the repo: the
-cross-encoder appeared to move German `specific` recall off a 55.6% that two
-embedding models had left identical, and CLAUDE.md recorded it as failing a
-paired test at n=9 - "a reason to BUILD A BIGGER GERMAN SET and nothing more".
+cross-encoder appeared to move German `specific` off a 55.6% that two embedding
+models had left identical, recorded as failing a paired test at n=9.
 
-**What I tried.** Built the set as `eval/queries_de.yaml`: the SAME 118 targets
-and tiers as queries.yaml, asked in German, generated from the source file so
-the 148 app_ids were copied rather than retyped. `specific` German went from 9
-queries to 44. Then re-ran the comparison paired, with a sign test and a
-bootstrap that now live in `eval/paired.py` instead of a scratch script.
+**What I tried.** Built `eval/queries_de.yaml` - the same 118 targets and tiers
+asked in German, generated so the app_ids were copied rather than retyped, taking
+`specific` German from 9 queries to 44. Then re-ran the comparison paired, with
+the sign test and bootstrap that now live in `eval/paired.py`.
 
-**What fixed it.** Nothing to fix - the claim is retired rather than deferred.
-Reranking on German is +3.8% [-3.0%, +11.0%], 13 wins to 7, p=0.263, and
-`specific` German is +9.1% [-2.3%, +20.5%], p=0.289. At n=44 instead of n=9 that
-is now an informative negative rather than an underpowered one: the reranker's
-benefit is established in aggregate (+8.3% [+2.5%, +14.5%]) and is not
-established for German. The same set also produced the first EN/DE number that
-is not confounded by tier mix or target choice - -16.1% [-25.8%, -6.8%], 20
-losses to 4 wins, p=0.002, almost all of it in `specific`.
-
----
+**What fixed it.** Nothing to fix; the claim is retired rather than deferred.
+Reranking on German is +3.8% [-3.0%, +11.0%], p=0.263 (at ef_search 200; +4.7%,
+p=0.189 at 800). At n=44 that is an informative negative rather than an
+underpowered one. The same set also produced the first EN/DE number not
+confounded by tier mix or target choice.
 
 ## 2026-09-08 - The recorded p-value was one-sided and nothing said so
 
 **What broke.** Putting the sign test into `eval/paired.py` meant checking it
-against a known result, and CLAUDE.md's only recorded one was Qwen3 against bge:
-"11 wins to 5, p=0.105". My implementation returned 0.2101 for that exact split.
+against a known result, and CLAUDE.md's only recorded one was "11 wins to 5,
+p=0.105". My implementation returned 0.2101 for that exact split.
 
-**What I tried.** Worked the binomial out by hand. For 11 of 16, the upper tail
-is 6885/65536 = 0.1051 and twice that is 0.2101. So both numbers are correct and
-they are the SAME data under different conventions - the recorded figure was
-one-sided and nothing in the repo said so.
+**What I tried.** Worked the binomial by hand: for 11 of 16 the upper tail is
+6885/65536 = 0.1051, and twice that is 0.2101. Both are correct - the same data
+under different conventions, and nothing in the repo said which.
 
-**What fixed it.** Kept two-sided, which is the right default because "are these
-two models different" is not a directional hypothesis and choosing the direction
-after seeing which arm won is what makes a one-sided test flattering. Then
-labelled it everywhere it could be confused: in `paired.py`'s self-test, which
-asserts the 0.2101 and prints both, and in CLAUDE.md beside the recorded 0.105.
-No published claim changes - the split was not significant under either
-convention - but a future two-sided p compared against that 0.105 would have
-looked like a result appearing out of nowhere.
-
----
+**What fixed it.** Kept two-sided, because "are these different" is not a
+directional hypothesis and choosing the direction after seeing which arm won is
+what makes a one-sided test flattering. Labelled it in `paired.py`'s self-test,
+which asserts the 0.2101 and prints both, and beside the recorded 0.105. No
+published claim changes - but a future two-sided p compared against that 0.105
+would have looked like a result appearing out of nowhere.
 
 ## 2026-09-08 - Thirty searches at once take 209 seconds each
 
 **What broke.** A concurrency check on the metrics recorder - 30 parallel
-searches, to prove the lock does not lose or duplicate records - timed out at a
-180s client deadline. I had budgeted 180s for 30 requests that take 2.4s each.
+searches, to prove the lock loses nothing - timed out at a 180s deadline that
+budgeted 2.4s per request.
 
 **What I tried.** Read the per-request log lines the same change had just added:
-`search 'parallel probe 7' -> 5 results in 209446ms (parse 70175, relax 4, embed
-267, query 59, rerank 138657)`. So the requests were not stuck, they were
-queueing - a single search spending 70s in the parser and 139s in the reranker.
-One GPU holds Ollama's resident 6.6GB chat model and the in-process
-cross-encoder, and nothing bounds how many requests contend for it.
+`209446ms (parse 70175, relax 4, embed 267, query 59, rerank 138657)`. The
+requests were not stuck, they were queueing - one GPU holds Ollama's resident
+6.6GB chat model and the in-process cross-encoder, and nothing bounds how many
+requests contend for it.
 
 **What fixed it.** Nothing, and that is the finding: the API is a single-user
-system under load, which is now written down in README with a number attached
-rather than left to be discovered. The recorder itself was fine - log lines and
-`search.n` agreed exactly at every observation. The lesson for the check: a
-concurrency test on a component must not be run through a pipeline whose
-bottleneck is a shared GPU, or it measures the GPU. Re-run it against
-`RANK_METHOD=rrf`, where a search is ~50ms and the lock is the only thing
-under test.
-
----
+system under load, now written down in README with a number rather than left to
+be discovered. The recorder was fine - log lines and `search.n` agreed exactly.
+Lesson for the check: a concurrency test on a component must not run through a
+pipeline whose bottleneck is a shared GPU, or it measures the GPU.
 
 ## 2026-09-08 - The p95 guard that did nothing at exactly its own boundary
 
-**What broke.** `/api/stats` withholds p95 until enough samples exist, because
-below that the "95th percentile" is just the largest value and printing the
-largest value under a p95 label is a wrong label rather than a rough number. I
-set the threshold to 20 by eye. The check script printed `n=20 p50=110.0
-p95=119.0 max=119.0` - p95 and max were the same number, so at the exact
-boundary the guard permitted the thing it existed to forbid.
+**What broke.** `/api/stats` withholds p95 until enough samples exist. I set the
+threshold to 20 by eye, and the check script printed `n=20 p50=110.0 p95=119.0
+max=119.0` - at the exact boundary the guard permitted the thing it forbids.
 
 **What I tried.** Enumerated the nearest-rank index against n rather than
-reasoning about it. The index is `min(n-1, int(n*0.95))`, and it equals `n-1`
-for every n up to 20: at n=20 it is `int(19.0) = 19 = n-1`. The first n where
-p95 stops being the maximum is **21**, not 40 and not 100.
+reasoning about it: `min(n-1, int(n*0.95))` equals `n-1` for every n up to 20,
+because at n=20 it is `int(19.0)`. The first n where p95 stops being the maximum
+is **21**.
 
-**What fixed it.** `MIN_P95_SAMPLES = 21`, plus two assertions in the check
-script so it cannot regress silently: `p95 < max` at the threshold, and a
-derived check that recomputes the boundary from the formula and requires the
-constant to equal it. What caught this was printing p95 beside max rather than
-asserting p95 was merely non-null - the same lesson as the explanation verifier
-in #38. A guard that has never been shown to fire is not known to work.
-
----
+**What fixed it.** `MIN_P95_SAMPLES = 21`, plus two assertions so it cannot
+regress silently: `p95 < max` at the threshold, and a derived check recomputing
+the boundary from the formula. What caught it was printing p95 beside max rather
+than asserting p95 was merely non-null. A guard that has never been shown to fire
+is not known to work.
 
 ## 2026-09-08 - Two identical eval runs, 20x apart on latency
 
-**What broke.** `run_eval` after the observability change reported median search
-1,844ms and reranking p95 21,284ms, against documented figures of 1,021ms and
-1,376ms. That reads exactly like a regression from the change just made.
+**What broke.** `run_eval` reported median search 1,844ms and rerank p95
+21,284ms against documented figures of 1,021ms and 1,376ms - which reads exactly
+like a regression from the change just made.
 
-**What I tried.** Checked recall first: 68.8 / 27.2 / 88.6 / 77.3, byte-identical
-to the committed table, and 71% under 1k. A change that slowed reranking 20x
-without moving a single query is not a ranking change. Then checked the GPU:
-8.3GB of 16.4GB in use, Ollama holding a resident 6.6GB chat model, after I had
-restarted the API four times in a row and reloaded the cross-encoder each time.
+**What I tried.** Checked recall first: byte-identical to the committed table. A
+change that slowed reranking 20x without moving a single query is not a ranking
+change. Then checked the GPU: 8.3GB in use, Ollama holding its 6.6GB chat model,
+after I had restarted the API four times and reloaded the cross-encoder each
+time.
 
-**What fixed it.** Nothing in the code - re-running it gave 1,169ms median and
-1,573ms rerank p95, back at the documented numbers. The lesson is that rerank
-latency is a measurement of the machine's VRAM state as much as of the model,
-so a latency figure taken right after other GPU work is not a measurement. The
-recall column is what said the difference was environmental; without it I would
-have gone looking through a diff that could not possibly have caused it.
-
----
+**What fixed it.** Nothing in the code - re-running gave 1,169ms and 1,573ms.
+Rerank latency measures the machine's VRAM state as much as the model, so a
+figure taken right after other GPU work is not a measurement. The recall column
+is what said the difference was environmental.
 
 ## 2026-09-08 - The parser costs more than the cross-encoder
 
-**What broke.** Nothing - this is what item 6 was for. The whole project has
-treated the reranker as the expensive stage, on the strength of it being the
-thing bought deliberately with latency.
+**What broke.** Nothing - the whole project had treated the reranker as the
+expensive stage, on the strength of it being the thing bought deliberately with
+latency.
 
-**What I tried.** 50 real searches through `/api/stats`, nothing excluded:
-parse 1,217ms p50, rerank 1,048ms, query 46ms, embed 31ms, relax 3ms.
+**What I tried.** 50 real searches through `/api/stats`, nothing excluded: parse
+1,217ms p50, rerank 1,048ms, query 46ms, embed 31ms, relax 3ms.
 
-**What fixed it.** No fix - a corrected belief. The dominant cost is the LLM
-parse, which nobody classes as a ranking stage, and that makes the editable-chip
-path worth more than "14x faster on a chip edit" conveyed: it removes the single
-largest stage. It also showed the relaxation ladder costs 3ms on live traffic
-rather than the 11-24ms its design note claims, because that range was the worst
-case across scenarios and most queries stop at their first count. Both numbers
-were in the repo as assertions before there was anything that could check them.
-
----
+**What fixed it.** A corrected belief. The dominant cost is the LLM parse, which
+nobody classes as a ranking stage, and that makes the editable-chip path worth
+more than "14x faster" conveyed: it removes the single largest stage. The
+relaxation ladder also costs 3ms on live traffic rather than the 11-24ms its
+design note claimed. Both were assertions before there was anything to check
+them.
 
 ## 2026-09-08 - Relaxation: the cheap loop, and the two things I got wrong testing it
 
-**What broke.** Nothing - this was item 5. A query whose filters match almost
-nothing returned an almost-empty page and told the user to fix it themselves.
+**What broke.** Nothing - a query whose filters match almost nothing returned an
+almost-empty page and told the user to fix it themselves.
 
-**What I tried.** The obvious loop re-runs `search()` after each relaxation.
-Since the cross-encoder landed that costs ~1.1s per attempt, so three attempts
-would spend three seconds deciding which filters to use. Measured a capped count
-over the same `_apply_filters()` instead: 11-24ms, and the LIMIT cap is what
-keeps it cheap - uncapped over the unfiltered 55,120 rows it is 611ms, because
-"how many" is a much harder question than "are there at least ten".
+**What I tried.** The obvious loop re-runs `search()` after each relaxation,
+which since the cross-encoder costs ~1.1s per attempt. Measured a capped count
+over the same `_apply_filters()` instead: 11-24ms, where uncapped over 55,120
+rows is 611ms - "how many" is a much harder question than "are there ten".
 
 **What fixed it.** Walk the ladder on counts, then run exactly one real search. A
-query needing no relaxation pays one extra count: 1,067ms total against the usual
-~1,080ms.
+query needing no relaxation pays one extra count.
 
 **Two things my own tests got wrong.** The first "starved" query I wrote was not
-starved - `Cozy` AND `Horror` AND `Investigation` has been ANY-of since #33, so
-it matched plenty and the ladder correctly did nothing. I briefly read that as a
-bug in the relaxation rather than in the test. And I wrote the notes with em
-dashes, which a Windows console renders as a replacement character; the same
-string is printed by the CLI, not just rendered in the browser, so they are ASCII
-now.
+starved - `Cozy` AND `Horror` AND `Investigation` has been ANY-of since #33 - and
+I briefly read that as a bug in the relaxation rather than in the test. And I
+wrote the notes with em dashes, which a Windows console renders as a replacement
+character; the CLI prints those strings too, so they are ASCII now. See
+failures.md #39.
 
-Consequences: `run_eval` sets `relax_filters=False` and prints `relax: OFF`,
-because recall must be measured against a fixed filter set. The never-relax list
-- age, exclusions, multiplayer, platforms - is verified as behaviour rather than
-by reading it. See failures.md #39.
+## 2026-09-08 - The hallucination checker was the thing hallucinating
 
----
-
-## 2026-09-08 — The hallucination checker was the thing hallucinating
-
-**What broke.** Built the grounded-explanation layer: a one-line "why this
-matches" per result, with every claim verified against `games.tags` and anything
-citing a tag the game lacks thrown away. The first full run reported **7.3%**
-discarded over 590 explanations, which is a publishable-looking number and was
+**What broke.** The first full run of the grounded-explanation layer reported
+**7.3%** discarded over 590 explanations - a publishable-looking number, and
 wrong.
 
-**What I tried.** Printed eight discards next to each game's real tags instead
-of trusting the count. Three of the eight were the checker's fault:
+**What I tried.** Printed eight discards next to each game's real tags instead of
+trusting the count. Three of the eight were the checker's fault: "but does not
+include Fishing" flagged `Fishing` (the model DENYING a tag, which the prompt
+asks it to do), "Experience the daily life of..." flagged `Experience` (a
+sentence-initial verb that is also a tag), and "it is a Farming Sim" flagged
+`Farming` (a short tag inside a long one).
 
-```
-"It is a Cozy Farming Sim, but does not include Fishing."   -> flagged Fishing
-"Experience the daily life of an apprentice witch..."       -> flagged Experience
-```
+**What fixed it.** Three guards on the prose scan: overlaps resolve
+longest-first, a tag in a negated clause is a denial (scoped to its own clause,
+so "not a puzzle game but it is Souls-like" still flags Souls-like), and a
+sentence-initial single-word tag is grammar. Rate 7.3% -> **4.6%**, with prose
+discards falling from 19 to 3.
 
-The first is the model DENYING a tag, which the prompt explicitly asks it to do
-rather than invent. The second is a sentence-initial verb that happens to be a
-real tag. A third class had already fired on the very first live run: `Farming`
-and `Farming Sim` are both tags, so "it is a Farming Sim" matched both and a
-game carrying only the longer one was accused of citing the shorter - two of
-five correct explanations discarded.
-
-**What fixed it.** Three guards on the prose scan: overlapping matches resolve
-longest-first, a tag inside a negated clause is a denial rather than a claim
-(scoped to its own clause, so "not a puzzle game but it is Souls-like" still
-flags Souls-like), and a sentence-initial single-word tag is grammar rather than
-a citation. Rate went **7.3% -> 4.6%**, with the prose check falling from 19
-discards to 3 and the two untouched checks bit-identical across runs.
-
-Consequences: 16 of the original 43 "hallucinations" were mine. Every one of the
-three bugs pushed the number UP, which is the direction that looks like
-diligence and therefore never gets audited. The self-test - four known-bad
-responses plus a truthful control - is what made the rate worth doubting rather
-than explaining away, because the checker was already known to fire correctly on
-actual lies. See failures.md #38.
+16 of the original 43 "hallucinations" were mine, and every one of the three bugs
+pushed the number UP - the direction that looks like diligence and therefore
+never gets audited. The self-test is what made the rate worth doubting rather
+than explaining away. See failures.md #38.
 
 ---
 
-## 2026-09-07 — The reranker could not be served, twice, and torch lied about why
+## 2026-09-07 - The reranker could not be served, twice, and torch lied about why
 
-**What broke.** BUILD_PLAN's Weekend 4 item 1 says `ollama pull
-bge-reranker-v2-m3`. Ollama has no rerank endpoint at all — `POST /api/rerank`
-is a **404** on 0.33.3, PR #7219 has been open since 2024, and every community
-workaround scores through the *embedding* endpoint, which is the bi-encoder the
-project already has. So the one-line instruction was never going to run.
+**What broke.** The plan said `ollama pull bge-reranker-v2-m3`. Ollama has no
+rerank endpoint at all - `POST /api/rerank` is a 404, PR #7219 has been open
+since 2024, and every community workaround scores through the *embedding*
+endpoint, which is the bi-encoder the project already has.
 
-**What I tried.** Hugging Face TEI as a compose service, which is the right
-shape for this repo — a container with a real `/rerank` route, direct HTTP, same
-as Ollama. It came up on **CPU**, with `Could not find a compatible CUDA device`
-as a WARNING rather than an error, and then sat in "Warming up model" for eight
-minutes without ever going healthy.
-
-Chased the compose syntax first and was wrong: switched
-`deploy.resources.reservations.devices` to the modern `gpus: all`, and a plain
-`docker run --gpus all` on the same image failed identically. Not the compose
-file.
-
-The container's view was genuinely strange, and each of these is a thing that
-usually IS the answer:
-
-```
-nvidia-smi -L        GPU 0: NVIDIA GeForce RTX 4080 SUPER (UUID: GPU-e219df2a...)
-/dev/dxg             present
-libdxcore.so         present
-/usr/lib/wsl/drivers populated
-CUDA driver API      DriverError(CUDA_ERROR_NO_DEVICE)
-```
-
-NVML works and the CUDA driver API does not, which is the signature of a
-**user-mode/kernel-mode driver mismatch**. The container was being handed UMD
-615.65.06 against KMD 616.56. Upgrading the host driver to 616.56 and restarting
-WSL did not move it: the mounted `libcuda.so.1` stayed byte-identical (188,024
-bytes, dated Aug 20), because Docker Desktop ships driver libraries in its own
-managed WSL distro and those track **Docker Desktop's** version, not the host's
-NVIDIA driver. `NVIDIA_DISABLE_REQUIRE=1` did not help either. This is the
-documented Docker Desktop WSL2 / NVIDIA Container Toolkit incompatibility;
-NVIDIA's own guidance is to use Docker CE inside WSL2 instead.
+**What I tried.** Hugging Face TEI as a compose service, which is the right shape
+for this repo. It came up on **CPU**, with `Could not find a compatible CUDA
+device` as a WARNING rather than an error, and sat in "Warming up model" for
+eight minutes without going healthy. Chased the compose syntax first and was
+wrong - a plain `docker run --gpus all` failed identically. The container's view
+was the giveaway: `nvidia-smi` listed the 4080 by UUID while the CUDA driver API
+answered `CUDA_ERROR_NO_DEVICE`, which is the signature of a user-mode/kernel-mode
+driver mismatch (UMD 615.65.06 against KMD 616.56). Upgrading the host driver did
+not move it: Docker Desktop ships driver libraries in its own managed WSL distro,
+tracking Docker Desktop's version rather than the host's.
 
 **What fixed it.** Ran the model in-process on the host, where CUDA has worked
-the whole time — Ollama has been using that GPU all session. BUILD_PLAN sanctions
-it in the same line as the Ollama suggestion: "or run it via
-sentence-transformers".
+all along. Then torch lied about the reason, which cost two more rounds: `uv add
+torch` on Windows installs `2.14.0+cpu` from PyPI silently, and the only symptom
+is `torch.cuda.is_available() == False`. Pointing uv at PyTorch's index was not
+enough either - an unnamed `[[tool.uv.index]]` is just another index, and
+resolution went back to PyPI. It needs a NAMED index with `explicit = true` plus
+a `[tool.uv.sources]` binding.
 
-Then torch lied about the reason, which cost two more rounds and is the part
-worth remembering. `uv add torch` on Windows installs **`2.14.0+cpu` from PyPI**,
-silently, and the only symptom is `torch.cuda.is_available() == False` — which
-reads exactly like a broken GPU rather than a wrong wheel. Pointing uv at
-PyTorch's index was not enough either: an unnamed `[[tool.uv.index]]` is still
-just another index, and resolution went back to PyPI. It needs a NAMED index with
-`explicit = true` plus a `[tool.uv.sources]` binding, or torch quietly stays on
-CPU:
-
-```toml
-[[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu130" }
-```
-
-`2.14.0+cu130`, `cuda available: True`, 15.8GB free on the 4080. Reranking 200
-candidates takes **253ms warm**, against the 8 minutes TEI spent not finishing a
-warm-up on CPU.
-
-**Consequences.** The TEI compose service is deleted rather than left in place —
-a service that cannot work is a trap for whoever reads the file next. Two real
-costs stay: the containerised backend cannot rerank, because torch is not in that
-image and the GPU is not either (the same honest limitation ingest already has),
-and `RERANK_DEVICE=cuda` is now checked loudly at load, because
-sentence-transformers falls back to CPU without saying so and a CPU eval is not a
-slower measurement, it is an unusable one.
-
-**What to take from this.** Three separate layers each failed silently and in the
+**What to take from this.** Three layers each failed silently and in the
 direction of "still works, just worse": Ollama 404s an endpoint that does not
-exist, TEI warns and continues on CPU, and torch installs a CPU wheel without
-complaint. None of them raised. The 8-minute warm-up was the only reason any of
-it got noticed at all — and the thing that actually isolated the Docker fault was
-reproducing it OUTSIDE compose, which took one command and should have been the
-first thing I did rather than the fifth.
+exist, TEI warns and continues on CPU, torch installs a CPU wheel without
+complaint. The 8-minute warm-up was the only reason any of it was noticed, and
+what actually isolated the Docker fault was reproducing it OUTSIDE compose -
+one command, and it should have been first rather than fifth.
 
----
+## 2026-09-07 - Built the instrument that three changes had to go without
 
-## 2026-09-07 — Built the instrument that three changes had to go without
-
-**What broke.** Nothing, this time - the gap was in the measurement. Three parser
-changes in a row (#33, #34, #35) could not be judged by `run_eval`, because not
-one of its 118 queries names a price, a platform, a year, an age or a game. Every
-filter the parser extracts can only shrink the candidate set, so recall punishes
-extraction and can never reward it. The instrument always votes for doing less.
+**What broke.** Nothing - the gap was in the measurement. Three parser changes in
+a row (#33, #34, #35) could not be judged by `run_eval`, because not one of its
+118 queries names a price, platform, year, age or game. The instrument always
+votes for doing less.
 
 **What I tried.** `eval/parse_cases.yaml` (47 labelled parses) and
-`eval/run_parse_eval.py`. It scores the two things recall cannot see: constraints
-MISSED, and constraints INVENTED - the second needs no labels, because any scalar
-field a case does not name is required to come back null. It also checks that a
-constraint which became a filter left `semantic_query` (the #34 rule), defaults
-to 3 reps with a `flaky` column (the #33 rule), and keeps `known_gap` cases in
-the file but out of the score.
+`run_parse_eval.py`, scoring constraints MISSED and constraints INVENTED - the
+second needs no labels, because any scalar a case does not name must come back
+null. Then self-tested it by putting each of the day's bugs back by monkeypatch:
+it caught three. The fourth, the invented all-three platforms, would not
+reproduce with the guard off, so that arm is unproven rather than passing.
 
-Then self-tested it, because a harness that passes everything on the first run
-might be measuring nothing: put each of today's bugs back by monkeypatch and
-check it goes red. It caught three - the all-optional schema (4 missed), the
-popularity leak (6 of 7 leaked), the unreachable one-word titles (6 missed, 3/4
-exclusions). The fourth, the invented all-three platforms, would not reproduce at
-all with the guard off, so that arm is unproven rather than passing. Recorded as
-a correction on #33.
+**What fixed it.** Baseline 319/319 fields, 0 flaky over 3 reps, 0 leaks, 3
+known gaps still failing as documented. A regression guard rather than headroom.
 
-**What fixed it.** Baseline: 319/319 fields, 0 flaky over 3 reps, 4/4 exclusions,
-0 leaks, 3 known gaps still failing as documented. That is a regression guard
-rather than headroom - the parser passes everything currently labelled, which is
-the expected state after fixing four bugs in it today.
+## 2026-09-07 - A one-word title was unreachable, and the obvious fix was worse
 
----
+**What broke.** Four of eight exclusion phrasings excluded nothing at all:
+`without skyrim`, `except hades`, `not forza` found no reference. Not an
+exclusion bug - `_word_ngrams` only makes 2-to-5 word windows, so a one-word name
+can never be a candidate, and `like hades` borrowed no tags either.
 
-## 2026-09-07 — A one-word title was unreachable, and the obvious fix was worse
+**What I tried.** Measured the obvious fix before shipping it, and it was much
+worse than the bug: generating every single word takes false positives over the
+118 eval queries from 4 to 24 - "first person puzzle game" matched `Persona 5
+Royal`, because `person` prefixes `Persona` - and each one appends six wrong tags
+to `semantic_query`.
 
-**What broke.** Went to fix the exclusion-phrase leak that #34 called "arguably
-worse" than the popularity one. It is not — the excluder word survives in 2 of 8
-phrasings, not 8 of 9, and what stays behind is a real game name, which is useful
-signal rather than noise. But four of those eight queries excluded nothing at
-all: `without skyrim`, `except hades`, `not forza` all found no reference.
+**What fixed it.** `_REFERENCE_CUE`: a single word is a candidate only when
+`like` / `similar to` / `excluding` / `wie` / `ohne` precede it. Six of seven
+titles found, false positives unchanged at 4/118. Cued singles are appended after
+the longest-first windows so `call of duty` still beats `call`, and
+`MIN_NAME_LENGTH` is 5 so Hades/Stray/Forza are reachable. `skyrim` is still
+unreachable and should be - the real name is `The Elder Scrolls V: Skyrim`, which
+is the prefix-match limitation from #21/#23. See failures.md #35.
 
-**What I tried.** Split reference-matching from excluder-matching, which showed
-the excluder logic was fine and `_find_referenced_game` was the problem.
-`_word_ngrams` only makes 2-to-5 word windows, so a one-word name can never be a
-candidate — `Hades` has 279,741 reviews and nothing prefixes it. `MIN_NAME_LENGTH
-= 6` blocked it again at five characters. Not an exclusion bug at all: `like
-hades` borrowed no tags either, which is the whole point of `title_lookup`.
+## 2026-09-07 - A filter that also stayed in the query vector
 
-Then measured the obvious fix before shipping it, and it was much worse than the
-bug: generating every single word takes false positives over the 118 eval queries
-from 4 to 24 — "first person puzzle game" matched `Persona 5 Royal`, because
-`person` prefixes `Persona` — and each false positive appends six wrong tags to
-`semantic_query`.
-
-**What fixed it.** `_REFERENCE_CUE`: a single word is only a candidate when
-`like` / `similar to` / `excluding` / `wie` / `ohne` and friends precede it. Six
-of seven titles found, false positives unchanged at 4/118 with the same four
-identities. `_word_ngrams` untouched, cued singles appended after the
-longest-first windows so `call of duty` still beats `call`, and `MIN_NAME_LENGTH`
-5 so Hades/Stray/Forza are reachable.
-
-Consequences: `skyrim` is still unreachable and should be — the real name is `The
-Elder Scrolls V: Skyrim` and no query prefix opens it, which is the prefix-match
-limitation from #21/#23. And the eval cannot score any of this; the 118 queries
-serve as a false-positive corpus, not a recall measure. See failures.md #35.
-
----
-
-## 2026-09-07 — A filter that also stayed in the query vector
-
-**What broke.** Asked why "a game where we play as a cat exploring city or ruins,
-which is also popular" did not return Stray. Stray was not the bug — it sits at
-cosine rank 20 and RRF at `w=0.20` cannot lift that past rank-1 matches — but the
-parse showed something else: `min_reviews: 1000` correctly extracted, and
-`semantic_query: 'cat exploring city or ruins popular'`. The word was still being
-embedded after it had already become a SQL filter.
+**What broke.** A query asking for a popular game parsed to `min_reviews: 1000`
+correctly - and left the word "popular" in `semantic_query`, so it was still
+being embedded after becoming a SQL filter.
 
 **What I tried.** Checked how general it was rather than fixing the one case: the
-popularity word survived into `semantic_query` on 8 of 9 queries that asked for
-it. Then tested the German side and found a second bug — `_POPULAR` carried bare
-`beliebt` next to `bekannt\w*`, so `beliebte Aufbauspiele`, the only form anyone
-actually writes, fired no filter at all.
+word survived into `semantic_query` on 8 of 9 queries that asked for it. Testing
+the German side found a second bug - `_POPULAR` carried bare `beliebt` next to
+`bekannt\w*`, so `beliebte Aufbauspiele`, the only form anyone writes, fired no
+filter at all.
 
-**What fixed it.** `_strip_popular()` next to `wants_popular()`, reusing
-`_POPULAR` itself so the trigger and the removal cannot drift apart, called from
-the branch that sets `min_reviews`. Guarded twice: skipped when stripping would
-leave nothing (`parse_query`'s empty check runs before `_apply_code_rules`), and
-run before `apply_reference` so the regex never sweeps the borrowed tag list.
-Plus `beliebt\w*`; `beliebig` correctly still does not match.
+**What fixed it.** `_strip_popular()` beside `wants_popular()`, reusing
+`_POPULAR` itself so trigger and removal cannot drift, called from the branch
+that sets `min_reviews`. Guarded twice: skipped when stripping would leave
+nothing, and run before `apply_reference` so the regex never sweeps the borrowed
+tags. Plus `beliebt\w*`, with `beliebig` correctly still not matching.
 
-Consequences: this is justified by correctness, not by a number. Stray moves from
-rank 20 to 17 and is still not in the top 10, and no eval query contains a
-popularity word so recall cannot see the change at all. The same leak is still
-open in `wants_reference_excluded` — "excluding call of duty" embeds the excluded
-franchise's own name, pulling the vector toward exactly what SQL is removing. See
-failures.md #34.
+Justified by correctness, not by a number: no eval query contains a popularity
+word, so recall cannot see the change. The same leak is still open in
+`wants_reference_excluded`. See failures.md #34.
 
----
+## 2026-09-07 - The schema let the model skip fields, and the tags were ANDed
 
-## 2026-09-07 — The schema let the model skip fields, and the tags were ANDed
+**What broke.** `...no wars on linux under 30$` extracted the platform and the
+exclusion but never the price. The suspicion was the `$` sign.
 
-**What broke.** `game that feels like call of duty, but no wars on linux under
-30$` extracted the platform and the exclusion but never the price. Suspicion was
-the `$` sign instead of the word "dollars".
-
-**What I tried.** Killed the `$` theory first: every notation parses correctly
-alone (`30$`, `$30`, `30 dollars`, `30 USD`, `30 bucks`) and every notation fails
-inside the full query, so it is neither the symbol nor the wording. Then read the
-RAW model output instead of the validated `ParsedQuery`, which is what actually
-showed it — `max_price_usd` was **absent**, not null, and `semantic_query` was
-emitted FIRST. `_llm_schema()` had `required: ['semantic_query']`, because
-Pydantic only marks a field required when it has no default. Ollama's `format`
-turns an optional property into a grammar branch the model can skip, so any
-filter could silently vanish, and absence reads downstream as "not requested".
-Measured the blast radius: `required_tags` dropped on 64% of parses.
+**What I tried.** Killed that theory first - every notation parses alone and
+every notation fails inside the full query. Then read the RAW model output
+instead of the validated `ParsedQuery`: `max_price_usd` was **absent**, not null,
+and `semantic_query` came FIRST. `_llm_schema()` had `required:
+['semantic_query']`, because Pydantic only marks a field required when it has no
+default, and Ollama's `format` turns an optional property into a grammar branch
+the model can skip. `required_tags` was dropped on 64% of parses.
 
 Forcing every field fixed extraction and made recall *worse* (46.5% against
-54.1%), which turned out to be a second, hidden defect: `required_tags` was ANDed
-via `tags @>`. Over 118 queries it helped 3 and hurt 11, six queries
-under-delivered, and "running a bookshop and taking on cosmic horror" returned
-zero rows — nothing carries `Cozy` AND `Horror` AND `Investigation`. With `&&`,
-8,544 games do.
+54.1%), which exposed a second defect: `required_tags` was ANDed via `tags @>`.
+Over 118 queries that helped 3 and hurt 11, and "running a bookshop and taking on
+cosmic horror" returned zero rows - nothing carries `Cozy` AND `Horror` AND
+`Investigation`. With `&&`, 8,544 games do.
 
-**What fixed it.** `_REQUIRED_FIELDS` in `query_parser.py` (the scalars plus
-`platforms` and `semantic_query`; the tag arrays stay optional, since forcing
-those costs 15.9 points of tail) and `Game.tags.contains()` → `.overlap()` in
-`_apply_filters`. One GIN index serves both operators, so no migration.
+**What fixed it.** `_REQUIRED_FIELDS` (the scalars plus `platforms` and
+`semantic_query`; the tag arrays stay optional, since forcing those costs 15.9
+points of tail) and `.overlap()` in `_apply_filters`. One GIN index serves both
+operators, so no migration.
 
-Requiring `platforms` then created a third defect — on a query naming no OS the
-model sometimes fills all three, and platforms are ANDed, so it silently demands
-Windows AND macOS AND Linux. Guarded in `_drop_invented_platforms()`. My first
-check for invented constraints missed it because I only counted the scalar
-fields and never looked at the one array in the required set.
+Requiring `platforms` then created a THIRD defect - on a query naming no OS the
+model sometimes fills all three, and platforms are ANDed. Guarded in
+`_drop_invented_platforms()`. My first check for invented constraints missed it
+because I only counted the scalars and never looked at the one array in the
+required set. Result: +4.2 overall (55.8% -> 60.0%), carried entirely by
+`specific`. See failures.md #33.
 
-Consequences: parse goes 0.56s → 1.07s, purely output tokens, so the API's
-first-search path goes ~1.35s → ~1.85s (chip edits still do not re-parse).
-Result is +4.2 overall against a same-session baseline (55.8% → 60.0%), carried
-entirely by `specific` (+11.4); `tail` is down 2.3, at the floor. And the eval
-could not have refereed this on its own — only 7 of 118 queries carry any
-constraint and none names a price, platform, year or age, so `--parse` scores how
-little the parser does rather than how well it parses.
-
-The `--parse` reproducibility floor is also wider than #32 said: four queries
-moved between two runs of identical code, which is 3.4 points. Two wrong
-diagnoses came out of chasing them before I re-ran and watched them move on their
-own. See failures.md #33.
-
----
-
-## 2026-09-06 — "single player" parsed away, and the reference tags argued back
+## 2026-09-06 - "single player" parsed away, and the reference tags argued back
 
 **What broke.** `call of duty like game, but not including itself, also popular,
-single player` returned Counter-Strike at rank 1. Counter-Strike is not single
-player.
+single player` returned Counter-Strike at rank 1.
 
 **What I tried.** Read the `filters:` line before touching the ranking, which is
-what made this quick: it printed `>= 1,000 reviews  not Call of Duty®` and
-nothing else, so `multiplayer` had come back null and no `NOT EXISTS` clause was
-ever built. Varied one clause at a time at temperature 0 — every shorter
-phrasing gives `False`, including `call of duty like game, single player` and
-`... also popular, single player`. Only all four clauses together, with the ask
-last, fails; move "single player" earlier in the same sentence and it comes
-back. That is failures.md #13/#22 again: the prompt is full and the last thing
-mentioned is what falls off.
+what made this quick: `multiplayer` had come back null, so no `NOT EXISTS` clause
+was ever built. Varied one clause at a time at temperature 0 - every shorter
+phrasing gives `False`. Only all four clauses together, with the ask last, fails;
+move "single player" earlier and it comes back. Isolating it also exposed an
+unrelated defect: `apply_reference` had appended Call of Duty's `Multiplayer` tag
+to the text being embedded, pushing the vector toward multiplayer exactly as the
+user asked to play alone.
 
-Isolating it with a hand-built `ParsedQuery` also exposed a second, unrelated
-defect: `apply_reference` had appended Call of Duty's tags — including
-`Multiplayer` — to the text being embedded. So the vector was being pushed
-toward multiplayer at the moment the user asked to play alone. Same shape for
-"like resident evil but nothing scary", which excluded `Horror` in SQL while
-embedding it.
+**What fixed it.** `wants_singleplayer()` beside `wants_popular()` - EN and DE,
+negation-guarded, filling rather than overriding - plus `_contradicts_filters()`
+so borrowed tags cannot fight `excluded_tags` or the multiplayer flag. The prompt
+was not touched.
 
-**What fixed it.** `wants_singleplayer()` in `query_parser.py` beside
-`wants_popular()` — EN and DE, negation-guarded, and it *fills* rather than
-overrides — plus `_contradicts_filters()` in `title_lookup.py` so borrowed tags
-cannot fight `excluded_tags` or the multiplayer flag. The prompt was not
-touched. Reported query now returns Ravenfield, Call of Juarez: Gunslinger and
-SUPERHOT, with zero of the top ten carrying a multiplayer category.
+Nothing in the repo could have caught this: there was no singleplayer case in
+`compare_parsers.py` or `queries.yaml`. And the before/after `--parse` runs
+turned up something separate - exactly one query moved, one the change provably
+cannot reach, so **the parser is deterministic within a run and not across
+runs**. See failures.md #32.
 
-Consequences: nothing in the repo could have caught this — there was no
-singleplayer case in `compare_parsers.py` *or* `queries.yaml`. Both new cases
-are now in `compare_parsers.py`. And the before/after `run_eval --parse` turned
-up something separate: exactly one query moved, one my change provably cannot
-reach, which means **the parser is deterministic within a run but not across
-runs** at temperature 0. `--parse` has a reproducibility floor of its own, at
-least one query wide. See failures.md #32.
+## 2026-09-06 - The eval cannot tell 2.3 points from nothing
 
----
+**What broke.** Arctic looked like it wanted `rrf w=0.10` rather than 0.20, on
+the grounds that `tail` was 75.0% against 72.7%. A finer sweep disagreed with the
+coarse one: `tail` came back 2.3 points lower at every weight, on the same model
+and the same queries.
 
-## 2026-09-06 — The eval cannot tell 2.3 points from nothing
+**What I tried.** Three experiments, cheapest first. The same config twice was
+byte-identical, ruling out query-time nondeterminism. Rebuilding the HNSW index
+over unchanged vectors was byte-identical, ruling out build order. That left the
+vectors - and there was a specific cause: the first arctic corpus was embedded in
+two halves under different `num_batch` settings, and batch size changes how the
+forward pass is grouped, which changes float summation order.
 
-**What broke.** Arctic looked like it needed `rrf w=0.10` rather than the shipped
-0.20, on the grounds that `tail` was 75.0% at 0.10 and 72.7% at 0.20. Before
-proposing a ranking change I swept finer — 0.10 through 0.25 — to find the actual
-cliff. The finer sweep disagreed with the coarse one: `tail` came back 2.3 points
-lower at every weight, `core` and `specific` identical. One query out of 44, on
-the same model and the same queries.
+**What fixed it.** Nothing in the code. The weight stays at 0.20, because the
+entire case for 0.10 was 2.3 points and the reproducibility floor is 2.3 points.
+Twenty minutes and four evals to decide NOT to make a change, which was the
+cheapest outcome on offer. The guards do not help here either: a corpus embedded
+two ways passes `verify_corpus_model()` and `verify_corpus_complete()` both.
+Never change batch settings mid-corpus.
 
-**What I tried.** Three experiments, cheapest first. The same config run twice
-was byte identical, ruling out query-time nondeterminism. Dropping and rebuilding
-the HNSW index over unchanged vectors was byte identical, ruling out graph build
-order. That left the vectors — and there was a specific cause, not general GPU
-noise: the first arctic corpus was embedded in two halves under different
-`num_batch` settings, 2,048 for the first 27,648 rows and 4,096 for the rest,
-because I added that setting midway through fixing the crash. Batch size changes
-how the forward pass is grouped, which changes float summation order, which flips
-whatever sits near a tie.
+## 2026-09-06 - Arctic wins, and the reason qwen3 was picked was an artifact
 
-**What fixed it.** Nothing needed fixing in the code. The weight stays at 0.20,
-because the entire case for 0.10 was 2.3 points and the reproducibility floor is
-2.3 points. The model verdict survives — arctic wins by 6.7 overall and 15.9 on
-`specific`, eight and seven queries, comfortably clear of a one-query floor.
+**What broke.** A conclusion from two days earlier. failures.md #25 measured
+three embedding models across `REVIEW_THRESHOLD` and found a crossover - qwen3
+ahead below ~1,000 reviews - so qwen3 shipped, because threshold 10 is what
+ships.
 
-Twenty minutes and four evals to decide *not* to make a change, which was the
-cheapest outcome on offer: the alternative was a ranking change justified by a
-number I had never checked was real. The uncomfortable part is point 3 in
-failures.md #31 — having measured the floor, several differences I reported
-earlier this week sit under it. And the guards do not help here: a corpus
-embedded two different ways passes `verify_corpus_model()`, which sees one model
-name, and `verify_corpus_complete()`, which sees no gaps. Never change batch
-settings mid-corpus.
+**What I tried.** Ran both models over the doubled 118-query set. Arctic wins by
+7.5 points overall, 15.9 on `specific`, 9.1 on `tail`, with the counter-metric
+unchanged, and it wins at `w=none` too - so it is neither buying recall by
+deleting the tail nor interacting with the popularity term.
 
-## 2026-09-06 — Arctic wins, and the reason qwen3 was picked was an artifact
+**What fixed it.** Realising what #25 actually measured: raising the threshold
+DELETES rows from the corpus; it does not ask for an obscure game. Those are
+different experiments and I had treated them as one. The `tail` tier asks
+directly, and arctic wins there by 9.1. #25 was careful - it reported the whole
+curve and reproduced every figure - and was still wrong about what the curve
+meant. More conditions do not rescue the wrong measurement; only a different
+measurement does.
 
-**What broke.** Nothing today — what broke was a conclusion from two days ago.
-failures.md #25 measured three embedding models across `REVIEW_THRESHOLD` and
-found a crossover: qwen3 ahead below ~1,000 reviews, arctic ahead above it by 19
-points. qwen3 shipped because threshold 10 is what ships. That reasoning was
-wrong, and it took building a different instrument to see it.
+Also worth keeping: measure the incumbent LAST and you pay for a third re-embed
+to get back to the winner.
 
-**What I tried.** Ran both models over the doubled 118-query set, same grid, same
-index settings. Arctic wins by 7.5 points overall, 15.9 on `specific`, 9.1 on
-`tail`, with the counter-metric unchanged — so it is not buying recall by
-deleting the long tail. It wins at `w=none` too, so it is not an interaction with
-the popularity term either.
+## 2026-09-06 - Doubled the eval, and it took back two of my claims
 
-**What fixed it.** Realising what #25 actually measured. Raising
-`REVIEW_THRESHOLD` deletes rows from the corpus; it does not ask for an obscure
-game. Those are different experiments and I had treated them as one. The `tail`
-tier asks directly — 44 queries whose right answer has 30-300 reviews — and
-arctic wins there by 9.1 points. There was never a regime where qwen3 found
-obscure games better; there was a regime where the corpus had been cut to 1,702
-rows and both models were scored on 30 queries about famous ones.
+**What broke.** The arctic-vs-qwen3 result was split, and at n=22 per tier that
+is two or three queries deciding an embedding model.
 
-#25 was careful. It reported the whole curve instead of one number, reproduced
-every figure in a second pass after finding its own verification unsound, and
-was still wrong about what the curve meant. More conditions do not rescue the
-wrong measurement — only a different measurement does. Every correction this
-week has had that shape: #26 the ground truth, #27 the fix for the ground truth,
-#29 the language split, and now #25's threshold curve. The ranker has been fine
-throughout. What kept being broken was what I was holding up to it.
-
-One more thing worth keeping, because it cost 26 minutes: the corpus is on qwen3
-right now, so shipping arctic needs a third re-embed. Ordering matters when each
-measurement costs half an hour — measure the incumbent last and you have to pay
-again to get back to the winner.
-
-## 2026-09-06 — Doubled the eval, and it took back two of my claims
-
-**What broke.** The arctic-vs-qwen3 result was split — arctic +13.7 on
-`specific`, −7.2 on `core`, level everywhere else — and at n=22 per tier that is
-two or three queries deciding an embedding model. Not a result, an anecdote.
-
-**What I tried.** Doubled both descriptive tiers to 44 and re-ran: 118 queries,
-German 27. Two things fell out that I had not gone looking for. `specific` and
-`tail` were supposed to be a controlled pair differing only in target
-popularity, which is the whole basis of failures.md #28 — but `tail` came from a
-sampler and `specific` was hand-picked, so sampling method varied too. And
-German recall jumped 31.0% → 42.6% just from adding six queries, which is not how
-a language property behaves.
+**What I tried.** Doubled both descriptive tiers to 44 and re-ran. Two things
+fell out that I had not gone looking for: `specific` and `tail` were supposed to
+be a controlled pair differing only in target popularity, but `tail` came from a
+sampler while `specific` was hand-picked; and German recall jumped 31.0% ->
+42.6% just from adding six queries, which is not how a language property
+behaves.
 
 **What fixed it.** `sample_specific.sql`, a mirror of the tail sampler differing
-only in the review band, so the pair is now controlled in fact rather than in
-the write-up. And a tier-by-language matrix in `run_eval`, because the aggregate
-EN/DE rows were measuring query mix as much as language: German is 37% `core`
-queries against English's 22%, and per tier the gap is 4.2 / 30.2 / 12.5 points
-against an aggregate of 24.3. Same data, four answers.
+only in review band, and a tier-by-language matrix in `run_eval` - German is 37%
+`core` against English's 22%, and per tier the gap was 4.2 / 30.2 / 12.5 against
+an aggregate of 24.3. Same data, four answers. Growing a test set is not only a
+power exercise: it re-runs every conclusion the old set produced.
 
-The part worth keeping is that the expansion was not meant to audit anything. It
-was meant to add statistical power for a model decision, and on the way it
-falsified one claim I had written as settled and corrected another I had stated
-too confidently. Meanwhile #28's actual finding — `tail` flat then collapsing
-while `specific` climbs — reproduced exactly on 22 queries written afterwards
-against a different model, which is far better evidence than the original run.
-Growing a test set is not only a power exercise; it re-runs every conclusion the
-old set produced.
+## 2026-09-06 - A 400 from Ollama, with the reason thrown away
 
-## 2026-09-06 — A 400 from Ollama, with the reason thrown away
+**What broke.** The arctic re-embed died at 21% on a bare
+`httpx.HTTPStatusError: 400 Bad Request`. No reason in the traceback, because
+`raise_for_status()` discards the response body.
 
-**What broke.** The arctic re-embed died at 21% (27,648 of 130,651) on a bare
-`httpx.HTTPStatusError: 400 Bad Request` from `/api/embed`. No reason in the
-traceback, because `raise_for_status()` discards the response body.
+**What I tried.** Hunted for a poisoned row first, which was wrong twice over:
+the longest `embed_text` is 1,091 bytes, so no row can exceed ~1,100 tokens, and
+re-running the exact failing page passed. Only then read Ollama's server log,
+which had said it all along: `input (3002 tokens) is too large to process
+(current batch size: 2048)`. Ollama packs several inputs into one server task and
+checks the PACKED count; the tasks either side were 114 and 134 tokens.
 
-**What I tried.** Hunted for a poisoned row first, which was wrong twice over.
-`max(length(embed_text))` is 694 characters and `max(octet_length())` is 1,091
-bytes, so with byte fallback no row can exceed ~1,100 tokens. Re-ran the exact
-uncommitted page — the commit is per 1,024 rows, so the failing page was still
-`NULL` and perfectly reproducible — and all eight 128-row chunks passed. Only
-then read `%LOCALAPPDATA%\Ollama\server.log`, which had said it all along:
-`input (3002 tokens) is too large to process. increase the physical batch size
-(current batch size: 2048)`. Ollama packs several inputs into one server task
-and checks the PACKED count against `n_ubatch`; the tasks either side of the
-rejected one were 114 and 134 tokens.
+**What fixed it.** Three things, in the order they matter. `_reason()` pulls
+Ollama's own message into the exception - the fix for the hour rather than for
+the bug. `num_batch` 4096 raises the ceiling to the model's context. And
+`_post_batch` halves a rejected batch and retries with a WARNING per split.
 
-**What fixed it.** Three things, in the order they matter. `_reason()` now pulls
-Ollama's own message into the exception, which is the fix for the hour rather
-than for the bug. `options.num_batch` (new setting, 4096) raises the ceiling to
-the model's context — verified in the log as `n_ubatch = 4096`. And `_post_batch`
-halves a rejected batch and retries, with a WARNING per split, so a 30-minute
-job survives a transient instead of dying at 21%.
+**Then it fired in production on a cause I had not predicted:** at 98% of the
+resumed run, Windows ephemeral-port exhaustion inside Ollama's own tokenize call
+after ~130k requests in 17 minutes. `num_batch` would not have touched it; the
+general-purpose net caught it and the run finished clean. When a specific fix and
+a broad one are both cheap, the broad one is what pays.
 
-The retry logic was covered by a stub rather than the real server, because the
-packing anomaly cannot be summoned on demand: 32 inputs at a deliberately low
-ceiling each got their own task and sailed through. What the stub verified was
-the recursion, the ordering and the terminal raise, not the condition that
-triggers them.
+## 2026-09-06 - The long tail tier works, and half of the fix was theatre
 
-**Then it fired in production, on a cause I had not predicted.** At 98% of the
-resumed run (101,376 of 103,003):
+**What broke.** Nothing - the new tier does what it was built for: `tail` is flat
+from w=none through 0.20, falls at 0.40, and collapses to 9.1% at w=2.00 while
+`core` climbs to 35.6%. What broke is my account of WHY the previous attempt
+failed.
 
-    Ollama rejected a batch of 128 (Post "http://127.0.0.1:53372/tokenize":
-    dial tcp: bind: An operation on a socket could not be performed because the
-    system lacked sufficient buffer space or because a queue was full.).
-    Retrying as 64 + 64.
-
-That is Windows ephemeral-port exhaustion inside Ollama's own internal tokenize
-call after ~130k requests in 17 minutes — nothing to do with batch sizes, and
-`num_batch` would not have touched it. The run finished clean: 130,651 vectors,
-0 pending, 0 zero-vectors.
-
-Which is the useful lesson. The targeted fix addressed the cause I had
-diagnosed; the general-purpose net caught a different one nobody had thought of,
-17 minutes into a job that would otherwise have died at 98%. When a specific fix
-and a broad one are both cheap, the broad one is what pays.
-
-The lesson is the boring one. The explanation was one layer away in a log file
-the whole time, and I spent the detour bisecting a corpus that could not
-physically contain the reported input. An exception that swallows the body turns
-a one-line diagnosis into an hour of guessing.
-
-## 2026-09-06 — The long tail tier works, and half of the fix was theatre
-
-**What broke.** Nothing, this time — which is why it is worth writing down. The
-tier built this morning does what it was built for: `tail` recall is flat at
-63.6% from w=none through w=0.20, falls to 59.1% at 0.40, and collapses to 9.1%
-at w=2.00 while `core` climbs to 35.6%. First honest peak-and-fall in this
-project. What broke is my account of *why* the previous attempt failed.
-
-**What I tried.** The entry above blamed two things and I fixed both: the
-sampler's `ORDER BY total_reviews DESC`, and queries written while reading
-`short_description`, which is inside `embed_text`. The second fix was to write
-"in the words a player would use." Instead of trusting that, I measured it
-against the old tier: content-word overlap with the target's own text is 37% in
-both, and 9 of 22 new targets sit at pure-cosine rank 1 against the old tier's
-7 of 22. By my own stated mechanism the new tier is *more* contaminated. It
+**What I tried.** I had fixed two things: the sampler's `ORDER BY total_reviews
+DESC`, and queries written while reading `short_description`. Instead of trusting
+the second, I measured it: content-word overlap with the target's own text is 37%
+in both tiers, and 9 of 22 new targets sit at pure-cosine rank 1 against the old
+tier's 7 of 22. By my own stated mechanism the new tier is MORE contaminated. It
 works anyway.
 
-**What fixed it.** The sampler, alone. Cosine rank was never the whole story:
-RRF scores `1/(k+r_cos) + w/(k+r_pop)`, so a rank-1 target that is also famous
-gains on both terms, while a rank-1 target with 60 reviews sits at the bottom of
-`r_pop` and the same weight pushes it down. Target obscurity prices the weight;
-query prose does not. `rrf w=0.20` holds — now because it is the last setting
-that costs the tail nothing, not because it is a corner on a proxy curve.
+**What fixed it.** The sampler, alone. RRF pays a famous rank-1 target on both
+terms while an obscure one sits at the bottom of the popularity rank, so target
+obscurity prices the weight and query prose does not. I shipped two changes, one
+mechanical and one that merely sounded disciplined, and measured them separately
+almost by accident. Measure the parts of a fix apart, or you learn the wrong rule
+from a real win.
 
-The lesson is about the shape of the fix rather than the ranker. I shipped two
-changes, one mechanical and one that merely sounded disciplined, and measured
-them separately almost by accident. Together they would have been recorded as a
-success and the useless half repeated on the next tier. Measure the parts of a
-fix apart, or you learn the wrong rule from a real win.
+## 2026-09-06 - The long-tail eval tier was the 97th percentile
 
-## 2026-09-06 — The long-tail eval tier was the 97th percentile
-
-**What broke.** NOTES 2026-09-05 ended needing labelled queries with obscure
-answers, so recall could see what a popularity weight deletes. I wrote 22 and
-swept the weight. Recall on the new tier rose with the weight — 54.5% at w=0.2
-to 68.2% at w=1.0 — when the entire point of the tier was that it should fall.
+**What broke.** I wrote 22 long-tail queries and swept the weight. Recall on the
+new tier ROSE with the weight, when the entire point of the tier was that it
+should fall.
 
 **What I tried.** Checked the targets rather than the ranker, on the principle
-that a metric behaving backwards is usually the metric. Percentile of each of
-the 22 app_ids against the corpus: median **97.1**, none below 93.4. The cause
-was one clause in my own sampler — `DISTINCT ON (tags[1]) ORDER BY tags[1],
-total_reviews DESC` keeps the *most*-reviewed game per tag, so a 50-5,000 band
-returned its top edge. Then I picked the ones I recognised. A second bias
-underneath it: I wrote each query while reading the game's `short_description`,
-which is inside `embed_text`, so the targets sat at cosine rank ~1 — and RRF's
-popularity term is capped at `w/(k+1)`, worth about fifteen rank places at
-w=0.2. It arithmetically cannot move a rank-1 hit, so the tier could not have
-reported harm regardless of the weight.
+that a metric behaving backwards is usually the metric. Percentile of each of the
+22 app_ids: median **97.1**, none below 93.4. One clause in my own sampler -
+`DISTINCT ON (tags[1]) ORDER BY total_reviews DESC` - keeps the MOST-reviewed
+game per tag, so a 50-5,000 band returned its top edge. A second bias underneath:
+I wrote each query while reading the game's `short_description`, which is inside
+`embed_text`, so targets sat at cosine rank ~1, where the popularity term
+arithmetically cannot move them.
 
-**What fixed it.** Not more labels — a metric that uses none. `run_eval` now
-prints the median review count of everything returned and the share under 1,000
-reviews. No ground truth, no query authorship, so neither bias can reach it. It
-priced the weight immediately: median returned goes 65 → 165 → 4,021 reviews at
-w = none → 0.2 → 1.0, and under-1k share 79% → 70% → 23%. Core recall bought per
-point of tail surrendered is 0.74 at w=0.2 and 0.17 at w=0.4, so **0.20 is the
-knee of the curve**, not just the cautious pick it was shipped as. The tier is
-renamed `specific` — it does measure something real, whether a detailed
-description finds its one game, just not what it was named for. See
+**What fixed it.** Not more labels - a metric that uses none. `run_eval` prints
+the median review count of everything returned and the share under 1,000. It
+priced the weight immediately: median returned goes 65 -> 165 -> 4,021 at
+w = none -> 0.2 -> 1.0, and 0.20 is the knee of the curve. The tier was renamed
+`specific`. A labelled tier is only as unbiased as its SAMPLING, and target-first
+query writing fixes bias in choosing queries, not in choosing targets. See
 failures.md #27.
-
-Consequence: a labelled tier is only as unbiased as its *sampling*, and
-target-first query writing does nothing about that — it fixes bias in choosing
-queries, not in choosing targets. Where a counter-metric can be computed without
-labels, prefer it; it cannot be talked into agreeing with you.
 
 ---
 
-## 2026-09-05 — The eval wanted a popularity weight that deletes the long tail
+## 2026-09-05 - The eval wanted a popularity weight that deletes the long tail
 
-**What broke.** Adding a prominence term to ranking worked, and the sweep then
-asked for far too much of it. recall@10 at threshold 10 climbed 18.3% -> 25.0
--> 28.3 -> 31.1 -> 34.4 -> 35.6% as the weight rose, peaking at `rrf w=2.0`
-(equivalently `log w=1.0`). Taking that number would have been the whole point
-of the exercise, and wrong.
+**What broke.** The sweep asked for far too much popularity: recall@10 climbed
+18.3% -> 35.6% as the weight rose, peaking at `rrf w=2.0`. Taking that number
+would have been the whole point of the exercise, and wrong.
 
 **What I tried.** Two controls, because a metric that only goes up is not
-measuring what you think.
+measuring what you think. Ranking by popularity ALONE scores 32.2% against the
+best blend's 35.6% - so of a 17.3-point gain, 13.9 came from sorting by review
+count. And the ground truth explains why: all 37 expected app_ids have >= 11,267
+reviews, so recall rises with the weight until the corpus is gone.
 
-First, rank by popularity *alone* - semantic similarity still selects the
-200-candidate pool but contributes nothing to the ordering. That scores
-**32.2%**, against 35.6% for the best blend and 18.3% for pure similarity. So of
-a 17.3-point gain, 13.9 came from sorting by review count and 3.4 from the
-embedding.
-
-Second, look at the ground truth. All 37 expected app_ids have **>= 11,267
-reviews**, median 84,488, none under 1,000. The labelled set contains no
-long-tail games at all, so recall@10 rises with the popularity weight until the
-corpus is gone. The metric cannot see the cost, so measure the cost directly -
-what the 30 eval queries actually return:
-
-| weight (log) | recall@10 | median reviews returned | results under 1k |
+| weight (log) | recall@10 | median reviews returned | under 1k |
 | --- | --- | --- | --- |
 | 0.00 | 18.3% | 68 | 79% |
 | 0.05 | 25.0% | 192 | 69% |
-| 0.10 | 28.3% | 674 | 54% |
 | 0.20 | 31.1% | 4,715 | 30% |
-| 0.40 | 34.4% | 12,366 | 6% |
 | 1.00 | 35.6% | 17,889 | **1%** |
 
-The eval-optimal weight returns almost nothing under 1,000 reviews. That is
-`REVIEW_THRESHOLD=10000` by another route - the exact trade refused a day
-earlier, arrived at from the other direction and with a better-looking number
-attached.
+**What fixed it.** Choosing the weight by the defect it repairs rather than the
+metric it moves: `rrf w=0.20`, the smallest setting that puts Cities: Skylines II
+above a 27-review asset flip for "city builder" while leaving 70% of results in
+the tail. `rrf` over `log` because at matched tail cost they are equivalent, so
+the tiebreak is durability - log's weight is calibrated against a model's cosine
+spread, rrf reads only ranks.
 
-**What fixed it.** Choosing the weight by the defect it repairs rather than by
-the metric it moves: `rrf w=0.20`, the smallest setting that puts Cities:
-Skylines II above a 27-review asset flip for "city builder" while leaving 70% of
-results in the tail. Costs 10 points of recall against the eval optimum and
-keeps the product.
+**Latency, separately.** `run_eval`'s median times the whole `search()` call,
+embedding included, and Ollama's embed time swung 94-834ms after a host restart,
+making ranking look 20x slower than it is. Time the thing you changed, not the
+pipeline containing it.
 
-`rrf` over `log` because at matched tail cost they are equivalent - log 0.05 and
-rrf 0.20 both give 25.0% at ~70% tail; log 0.20 and rrf 1.00 both give 31.1% -
-so the tiebreak is durability. log's weight is calibrated against the model's
-cosine spread (qwen3's top 10 spans 0.752-0.696, arctic's 0.577-0.502); rrf
-reads only ranks and survives a model swap unchanged, which matters while the
-model choice is still provisional.
+## 2026-09-04 - The 1024-dim HNSW index is 2x the size and quietly costs recall
 
-Final: 25.0 / 26.7 / 30.0 / 41.1 / 42.2% across the five thresholds, against
-18.3 / 22.8 / 26.7 / 38.3 / 38.9 before.
-
-**The real conclusion is that the eval needs long-tail ground truth.** Until it
-has some, no larger weight can be justified from it, and the honest reading of
-35.6% is "this metric rewards popularity", not "ranking improved by 17 points".
-
-**Latency, separately.** `run_eval`'s "median search latency" times the whole
-`search()` call, embedding included, and Ollama's embed time swung between 94ms
-and 834ms after a host restart - which made the ranking look 20x slower than it
-is. Measured apart, query time is 44-85ms at every threshold and an alternating
-A/B put rrf at ~57-60ms against ~40ms unranked. Time the thing you changed, not
-the pipeline containing it.
-
----
-
-## 2026-09-04 — The 1024-dim HNSW index is 2x the size and quietly costs recall
-
-**What broke.** Two predictions about migration `0007` were wrong at once. The
-plan estimated ~680MB for the rebuilt index (510MB scaled by 1024/768); it came
-out at **1020MB**. And re-running the eval with the index in place scored
-*lower* than the exact scan it replaced - 15.0% against 18.3% at threshold 10.
+**What broke.** Two predictions about migration 0007 were wrong at once. The plan
+estimated ~680MB (510MB scaled by 1024/768); it came out at **1020MB**. And
+re-running the eval with the index in place scored LOWER than the exact scan -
+15.0% against 18.3%.
 
 **What I tried.** For the size, divided it by the page size instead of guessing:
+exactly 1.000 pages per element. A 1024-dim float32 vector is 4,096 bytes, and
+with the neighbour list an element lands near 4.4KB - so two cannot share an 8KB
+page and each wastes ~45%. A packing cliff at 4KB, not a 33% dimension increase.
+For the recall, `hnsw.ef_search` was never set, so it ran at pgvector's default
+of 40.
 
-    pages 130,608   elements 130,651   pages_per_element 1.000
+**What fixed it.** `hnsw.ef_search = 200` restored exact-scan recall at every
+threshold, for 45ms -> 53ms against 225ms for the exact scan. Applied in
+`app/search.py` via `SET LOCAL`, not in the database - a GUC pinned on the
+database is exactly the invisible drift the Alembic rule exists to prevent.
+(Since raised to 800; see 2026-09-19.)
 
-Exactly one 8KB page per element. A 1024-dim float32 vector is 4,096 bytes;
-with the m=16 neighbour list and tuple overhead an element lands near 4.4KB, so
-two cannot share an 8KB page and each one wastes ~45%. At 768 dims an element is
-~3.4KB and two fit, which is why 510MB looked like the baseline to scale from.
-The jump is a **packing cliff at 4KB, not a 33% dimension increase** - the cost
-is a step function of dimension, and 1024 sits just past the step.
+Worth carrying: `halfvec` at 1024 dims is 2,048 bytes and would roughly halve the
+index. Untested here.
 
-For the recall, the index is approximate and `hnsw.ef_search` was never set, so
-it ran at pgvector's default of 40. `search.py` sets `iterative_scan` and
-nothing else.
+## 2026-09-04 - No leaderboard picked the winner, and the winner depends on the threshold
 
-**What fixed it.** `hnsw.ef_search = 200` restores exact-scan recall exactly, at
-every threshold:
+**What broke.** The first model comparison was run piecemeal, and bge-m3's
+pre-eval check used `min(embedding_model)`, which returns `bge-m3` whether or not
+arctic vectors are still in the same column. The numbers might have been measured
+over a mixed corpus, with no way to tell afterwards.
 
-| threshold | exact scan | ef_search 40 | ef_search 200 |
-| --- | --- | --- | --- |
-| 10 | 18.3% | 15.0% | 18.3% |
-| 100 | 22.8% | 19.4% | 22.8% |
-| 1,000 | 26.7% | 23.3% | 26.7% |
-| 10,000 | 38.3% | 38.3% | 38.3% |
-| 50,000 | 38.9% | 38.9% | 38.9% |
+**What I tried.** Re-ran all three end to end with the same verification before
+every eval: `count(DISTINCT embedding_model)` (not `min`), distinct
+`vector_dims`, pending count, and a degenerate-vector check via
+`(embedding <#> embedding) = 0`.
 
-45ms -> 53ms for those 3.3 points, against 225ms for the exact scan that scores
-the same. Not applied: it changes which results come back, so it is a ranking
-change and goes through plan mode. It belongs beside the existing
-`SET LOCAL hnsw.iterative_scan` in `app/search.py`, not in the database - it was
-measured with `ALTER DATABASE ... SET`, which has since been reset, because a
-GUC pinned on the database is exactly the invisible drift the Alembic rule
-exists to prevent.
+**What fixed it.** Nothing needed fixing - all thirty numbers reproduced exactly,
+which demonstrated rather than assumed that the `embedding IS NULL` work queue
+makes a resumed job write the same vectors.
 
-Note the loss is zero at 10,000 and above. A selective filter with
-`strict_order` already forces the scan to keep going until it has enough rows,
-so the approximation only bites when the filter is loose. Low threshold is both
-where recall is hardest *and* where the index hurts most.
-
-Worth carrying: `halfvec` at 1024 dims is 2,048 bytes, which fits two or three
-to a page and would roughly halve the index. pgvector indexes halfvec up to
-4,000 dimensions. Untested here.
-
----
-
-## 2026-09-04 — No leaderboard picked the winner, and the winner depends on the threshold
-
-**What broke.** The first model comparison was run piecemeal — one embed job
-was interrupted and resumed, and bge-m3's pre-eval check used
-`min(embedding_model)`, which returns `bge-m3` whether or not arctic vectors
-are still sitting in the same column. So the numbers might have been measured
-over a mixed corpus, and there was no way to tell after the fact.
-
-**What I tried.** Re-ran all three end to end: `--reload`, then the same
-verification query before every eval — `count(DISTINCT embedding_model)` (not
-`min`), distinct `vector_dims`, pending count, and a degenerate-vector check via
-`(embedding <#> embedding) = 0`, which is `-||v||^2` and exactly zero only for
-the zero vector. pgvector 0.8.6 has no `l2_norm(vector)`, only halfvec and
-sparsevec overloads, and casting would round small components to zero and report
-false positives.
-
-**What fixed it.** Nothing needed fixing: all thirty numbers reproduced exactly.
-The `embedding IS NULL` work queue means a resumed job writes the same vectors
-as an uninterrupted one — that is what it is for, now demonstrated instead of
-assumed. The verification gap was real; the results it threatened were not.
-
-recall@10, exact scan, no HNSW, per-query average:
-
-| threshold | corpus | arctic-embed2 | bge-m3 | qwen3:0.6b |
+| threshold | corpus | arctic | bge-m3 | qwen3:0.6b |
 | --- | --- | --- | --- | --- |
 | 10 | 55,120 | 8.3% | 10.0% | **18.3%** |
-| 100 | 22,700 | 17.8% | 10.0% | **22.8%** |
 | 1,000 | 7,212 | 26.1% | 22.8% | **26.7%** |
 | 10,000 | 1,702 | **57.2%** | 49.4% | 38.3% |
-| 50,000 | 470 | **47.2%** | 44.4% | 38.9% |
 
-**The ranking inverts between 1,000 and 10,000.** Below the crossover qwen3 wins
-by 10 points; above it arctic wins by 19. So "which embedding model is best" has
-no answer here without naming the review threshold — the two models are good at
-different things. Read together with the entry below: at low thresholds the
-corpus is mostly shovelware whose *names* restate the query, and arctic is more
-easily fooled by that; at high thresholds the shovelware is gone and arctic's
-stronger raw retrieval is what remains.
+**The ranking inverts between 1,000 and 10,000**, so "which model is best" has no
+answer without naming the threshold. No leaderboard predicted it: bge-m3 leads
+MIRACL by 13 points and finished last or joint-last at four of five thresholds.
+(That crossover reading was itself withdrawn two days later - see above.)
 
-Shipped qwen3, because `REVIEW_THRESHOLD=10` is the configuration that ships.
-**Re-measure after ranking gets a popularity term** — that moves the effective
-regime toward the clean-corpus end, where arctic wins. A ~26 min re-embed
-settles it; do not assume the choice survives.
-
-Also: no leaderboard predicted this. bge-m3 leads MIRACL by 13 points (69.2 vs
-55.8) and finished last or joint-last at four of five thresholds. arctic leads
-MTEB Retrieval (55.6 vs 48.8) and loses at the threshold in use. CLAUDE.md named
-bge-m3 as the Weekend 3 target on that evidence, and it is the worst of the
-three here. The plan flagged this risk — MIRACL is monolingual DE→DE while this
-is DE query against EN documents — and the measurement confirmed it.
-
-DE never trails EN for qwen3 at any threshold, which no other model managed. At
-n=10 German queries that is suggestive, not a result.
-
----
-
-## 2026-09-04 — The embedding model was not the problem; ranking was
+## 2026-09-04 - The embedding model was not the problem; ranking was
 
 **What broke.** Baseline recall@10 was 6.1% overall (9.2% EN, 0.0% DE) on
-`nomic-embed-text`. DE at zero reads as a German problem, but the German
-queries are near-parallel to the English ones, so DE's ceiling *is* EN's 9.2%.
-Both columns being bad pointed at the model — an English-only 2024 model
-against a bilingual corpus.
+`nomic-embed-text`. Re-dimensioning to 1024 and re-embedding with arctic gave
+8.3% overall - DE unstuck, but **EN went down**. A better model moved almost
+nothing.
 
-**What I tried.** Re-dimensioned to 1024 (migration `0006`) and re-embedded all
-130,651 games with `snowflake-arctic-embed2`, which leads MTEB Retrieval (55.6)
-and CLEF (54.1) among indexable candidates. Result: 8.3% overall — DE unstuck
-(0.0% -> 10.0%) but **EN went down**, 9.2% -> 7.5%. A better model moved
-almost nothing.
+**What I tried.** Reading the actual results instead of the score. For "city
+builder", every game whose NAME contains the query outranked Cities: Skylines II
+and its 73,524 reviews. Cosine similarity has no notion of prominence, and in a
+corpus that is mostly shovelware a nameless asset-flip called literally "City
+Builder" wins the lexical match every time.
 
-**What fixed it.** Reading the actual results instead of the score. Top 10 for
-`city builder`:
+**What fixed it.** Nothing yet - the finding is that ranking needs a popularity
+TERM, not a cliff. Sweeping `REVIEW_THRESHOLD` gives 7x from a config value
+(8.3% at 10 to 57.2% at 10,000), and the peak is real rather than circular: it
+FALLS at 50,000, where the filter starts eating expected games. Threshold 10,000
+is not adopted, because it costs 128,949 of 130,651 games and the long tail is
+the product.
 
-    City Builder / Megacity Builder / 20 Minute Metropolis - The Action City
-    Builder / Constructor Plus / City Block Builder / Square City Builder /
-    Epic City Builder 4 / Cities: Skylines II / ...
+## 2026-08-29 - A search took 18 seconds, and none of it was searching
 
-Every game whose *name* contains the query outranks Cities: Skylines II and its
-73,524 reviews. Cosine similarity has no notion of prominence, and in a corpus
-that is mostly shovelware a nameless asset-flip called literally "City Builder"
-wins the lexical match every time. The retrieval was never broken; the ranking
-has no quality term.
+**What broke.** A filtered CLI search reported `embed 18017ms | query 417ms`.
+Embedding one short string took eighteen seconds.
 
-Sweeping `REVIEW_THRESHOLD` (arctic-embed2, recall@10, exact scan, no HNSW):
-
-| threshold | corpus | EN | DE | overall |
-| --- | --- | --- | --- | --- |
-| 10 | 55,120 | 7.5% | 10.0% | 8.3% |
-| 100 | 22,700 | 19.2% | 15.0% | 17.8% |
-| 1,000 | 7,212 | 26.7% | 25.0% | 26.1% |
-| 10,000 | 1,702 | 63.3% | 45.0% | **57.2%** |
-| 50,000 | 470 | 45.8% | 50.0% | 47.2% |
-
-7x from a config value, not a model. The peak is real rather than circular: if
-this were only "the ground truth is all famous games", recall would keep
-climbing as the corpus shrank, and instead it *falls* at 50,000, where the
-filter starts eating expected games (Coffee Talk, A Short Hike, Monster Train).
-
-**Not adopting threshold 10,000.** 57% costs 128,949 of 130,651 games — that is
-search over the Steam top 1,700, and the long tail is the product. The finding
-is that ranking needs a popularity *term*, not a cliff. That is a ranking change
-and goes through plan mode.
-
-Also worth keeping: latency falls with the threshold (280ms -> 55ms) because a
-smaller candidate set is less work, the opposite of the HNSW `strict_order`
-tradeoff, which pays *more* as the filter gets more selective.
-
----
-
-## 2026-08-29 — A search took 18 seconds, and none of it was searching
-
-**What broke.** `search.py "co-op base builder" --platform linux --max-price 20
---multiplayer` reported `embed 18017ms | query 417ms`. Filtering and ranking
-were fine; embedding one short string took eighteen seconds.
-
-**What I tried.** `ollama ps` showed the model resident with
-`UNTIL: 4 minutes from now`. Ollama's default `keep_alive` is 5 minutes, after
-which it evicts the model from VRAM. An idle CLI therefore pays a cold model
-load — ~18s — to do ~20ms of arithmetic. Nothing was wrong with the code.
+**What I tried.** `ollama ps` showed the model resident with `UNTIL: 4 minutes
+from now`. Ollama's default `keep_alive` is 5 minutes, after which it evicts the
+model, so an idle CLI pays a cold load to do ~20ms of arithmetic.
 
 **What fixed it.** Pass `keep_alive` in the `/api/embed` body, from a new
-`OLLAMA_KEEP_ALIVE` setting defaulting to `30m`. The model is 323MB against
-16GB of VRAM, so holding it is free in practice. Set `-1` never to unload.
+`OLLAMA_KEEP_ALIVE` setting defaulting to `30m`. The model is 323MB against 16GB
+of VRAM, so holding it is free.
 
-Worth remembering when the API arrives: a server that is idle overnight pays
-this on its first request of the morning. Warming the model at startup, or
-`-1`, is the fix there.
+Separately, that run measured `query 417ms` against the 19.6ms I estimated while
+planning - the estimate used an existing row's embedding as the probe, whose
+neighbours already matched the filters. Benchmark with real queries.
 
-Separately, that run measured `query 417ms` against the 19.6ms I had estimated
-while planning. The estimate used an existing row's embedding as the probe
-vector, whose neighbours already matched the filters. A real query vector lands
-in sparser space and iterative_scan works harder. The planning number was
-optimistic by 20x — benchmark with real queries.
+## 2026-08-26 - HNSW index build failed with "No space left on device"
 
-## 2026-08-26 — HNSW index build failed with "No space left on device"
-
-**What broke.** `alembic upgrade head` on migration 0003 died with
-`DiskFull: could not resize shared memory segment to 2144407040 bytes`. The
-host had 588GB free.
+**What broke.** Migration 0003 died with `could not resize shared memory segment
+to 2144407040 bytes`. The host had 588GB free.
 
 **What I tried.** Read the byte count: 2,144,407,040 is exactly the 2GB set as
-`maintenance_work_mem`. Not disk at all — Docker gives a container 64MB of
-`/dev/shm` by default, and Postgres coordinates parallel workers through shared
-memory. `max_parallel_maintenance_workers = 4` made pgvector build the graph in
-a shared segment sized to maintenance_work_mem, which blew past 64MB. It
+`maintenance_work_mem`. Not disk at all - Docker gives a container 64MB of
+`/dev/shm`, Postgres coordinates parallel workers through shared memory, and it
 surfaces as a disk error because /dev/shm is a filesystem.
 
-**What fixed it.** `shm_size: 4gb` on the db service in docker-compose.yml, then
-recreate the container. It is a ceiling rather than a reservation, so nothing is
-consumed until needed. Serialising the build with
-`max_parallel_maintenance_workers = 0` also avoids it, but is slower and leaves
-the same trap waiting for the next parallel operation.
+**What fixed it.** `shm_size: 4gb` on the db service, then recreate the
+container. It is a ceiling rather than a reservation. Serialising the build also
+avoids it, but leaves the same trap for the next parallel operation. DDL is
+transactional, so the failed CREATE INDEX rolled back and alembic_version stayed
+at 0002.
 
-DDL is transactional in Postgres, so the failed CREATE INDEX rolled back
-cleanly and alembic_version stayed at 0002.
+## 2026-08-26 - Every price in the database was a sale price
 
-## 2026-08-26 — Every price in the database was a sale price
-
-**What broke.** Spot-checking the fresh ingest against Steam, Stardew Valley
-read $8.99 where its real price is $14.99. Not a parsing error — the column
-held exactly what the source said.
+**What broke.** Spot-checking the fresh ingest against Steam, Stardew Valley read
+$8.99 where its real price is $14.99. Not a parsing error - the column held
+exactly what the source said.
 
 **What I tried.** Checked the source record and found a `discount` field the
-loader had dropped: `price=8.99, discount=40`. So `price` is the price on the
-day of the scrape, and the scrape caught a Steam sale. 41,712 of 110,709 paid
-games (37.7%) were discounted. Filtering "under $20" on it wrongly admitted
-3,004 games — Rust reads as $19.99 and actually costs $39.99.
+loader had dropped. So `price` is the price on the day of the scrape, and the
+scrape caught a sale: 41,712 of 110,709 paid games (37.7%) were discounted, and
+filtering "under $20" wrongly admitted 3,004 games.
 
-**What fixed it.** Migration `0002` adds `discount_pct` plus a generated
-`list_price_usd` reversing the discount, guarded at both ends (0 means no sale;
-100 would divide by zero, and 6 games are at 100%). Loader coerces `discount`,
-which the source stores as str for 102,759 records and int for 36,205. Search
-filters on `list_price_usd`.
+**What fixed it.** Migration 0002 adds `discount_pct` plus a generated
+`list_price_usd` reversing the discount, guarded at both ends (100% would divide
+by zero, and 6 games are at 100%). The loader coerces `discount`, which the
+source stores as str for 102,759 records and int for 36,205.
 
-Two things worth remembering. Derived list price is a cent low — Steam rounds
-sale prices down, so $14.99 at -40% stores as $8.99 and reverses to $14.98;
-fine for filtering, don't display it as exact. And when verifying the fix,
-Python and Postgres disagreed on one row: Tomb Raider GOTY at $2.00 / -90%.
-Python's float gave 20.000000000000004 and excluded it; Postgres' numeric gave
-exactly 20.00. Postgres was right. That is what `numeric(10,2)` is for.
+Two things worth remembering. The derived list price is a cent low, because Steam
+rounds sale prices down - fine for filtering, don't display it as exact. And when
+verifying, Python and Postgres disagreed on one row: Python's float gave
+20.000000000000004 and excluded it, Postgres' numeric gave exactly 20.00.
+Postgres was right. That is what `numeric(10,2)` is for.
 
-## 2026-08-20 — Embeddings ran at 0.5/sec on a 4080 SUPER
+## 2026-08-20 - Embeddings ran at 0.5/sec on a 4080 SUPER
 
-**What broke.** First smoke test of Ollama embeddings took 2.1s per call.
-Projected out to 71 hours for 120k games. Expected minutes, not days.
+**What broke.** First smoke test of Ollama embeddings took 2.1s per call - 71
+hours for 120k games.
 
-**What I tried.** Checked `ollama ps` first, assuming CPU fallback — it said
-`100% GPU`, so compute wasn't the problem. That meant the time was going into
-per-request overhead. Benchmarked four combinations: `localhost` vs `127.0.0.1`,
-fresh connection per call vs one reused `httpx.Client`.
+**What I tried.** Checked `ollama ps` first, assuming CPU fallback: it said
+`100% GPU`, so the time was per-request overhead. Benchmarked four combinations:
+`localhost` vs `127.0.0.1`, fresh connection per call vs one reused
+`httpx.Client`.
 
-**What fixed it.** `localhost` on Windows resolves to IPv6 `::1` first. Ollama
-listens on IPv4 only, so every new connection stalls ~2.1s before falling back
-to `127.0.0.1`. Using the IP directly: 0.5 -> 17.6/sec. Reusing one client:
-35.7/sec. Batching via `/api/embed` with a list input: 62.3/sec. 125x total,
-no hardware change. 120k games is now ~32 min.
+**What fixed it.** `localhost` on Windows resolves to IPv6 `::1` first, and
+Ollama listens on IPv4 only, so every new connection stalls ~2.1s before falling
+back. Using the IP directly: 0.5 -> 17.6/sec. Reusing one client: 35.7/sec.
+Batching via `/api/embed` with a list input: 62.3/sec. 125x total, no hardware
+change.
 
-Consequences: `.env.example` uses `127.0.0.1` for both Ollama and Postgres —
-psycopg would hit the identical stall. The embedding client must hold one
-long-lived `httpx.Client` and send batches, not one text per request.
+Consequences: `.env.example` uses `127.0.0.1` for both Ollama and Postgres -
+psycopg would hit the identical stall - and the embedding client must hold one
+long-lived `httpx.Client` and send batches.

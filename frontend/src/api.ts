@@ -1,9 +1,6 @@
 /**
- * The two calls this app makes.
- *
- * Plain fetch, no client library. The backend talks to Ollama over direct HTTP
- * for the same reason - one less layer between a request and something you can
- * read in a network tab.
+ * The three calls this app makes. Plain fetch, no client library: one less
+ * layer between a request and something readable in a network tab.
  */
 
 import type {
@@ -40,16 +37,10 @@ export async function search(request: SearchRequest): Promise<SearchResponse> {
 /**
  * Explanations for results already on screen.
  *
- * A SECOND request on purpose. Search already costs ~1.1s of reranking, and
- * folding an LLM call into it would delay the whole result list for a sentence
- * nobody has scrolled to yet. Results render, then these arrive.
- *
- * Sends app_ids rather than the games: the backend re-reads name and tags from
- * its own database, because a check run against numbers the browser supplied
- * would be checking the model against the browser.
- *
- * Never throws. Explanations decorate a list that is already correct and
- * useful, so a failure here must leave the page exactly as it was.
+ * A SECOND request on purpose: an LLM call inside search would hold the whole
+ * list for a sentence nobody has scrolled to. Sends app_ids rather than games,
+ * because a check against browser-supplied tags checks the model against the
+ * browser. Never throws - a failure must leave the page exactly as it was.
  */
 export async function explain(request: ExplainRequest): Promise<ExplainResponse | null> {
   try {
@@ -66,12 +57,9 @@ export async function explain(request: ExplainRequest): Promise<ExplainResponse 
 }
 
 /**
- * Server-side latency percentiles, for the diagnostics panel.
- *
- * Never throws, for the same reason explain() does not: this decorates a result
- * list that is already correct, and a stats endpoint that took the page down
- * would be worse than no stats endpoint. An in-memory read on the server, so
- * calling it after each search costs nothing worth optimising.
+ * Server-side latency percentiles, for the diagnostics panel. Never throws,
+ * for explain()'s reason: a stats call that took the page down would be worse
+ * than no stats at all. An in-memory read, so calling it per search is free.
  */
 export async function stats(): Promise<StatsResponse | null> {
   try {

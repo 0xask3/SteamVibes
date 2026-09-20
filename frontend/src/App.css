@@ -281,7 +281,7 @@
   font-size: 0.88rem;
 }
 
-/* The generated explanation. Set apart from .blurb, which is Steam's own copy:
+/* The generated explanation, set apart from .blurb, which is Steam's own copy:
    one is a claim this app is making about the match, the other is marketing
    text from the store page, and conflating them would be dishonest. */
 .why {
@@ -325,9 +325,8 @@
 
 /* ---------- stats panel ---------- */
 
-/* Collapsed by default: a diagnostic, not a feature. It sits under the
-   per-search timings because it answers the question those provoke - "is this
-   search typical?" - which one line of numbers cannot. */
+/* Collapsed by default: a diagnostic, not a feature. Under the per-search
+   timings because it answers the question those provoke - "is this typical?" */
 .stats {
   margin-top: 0.75rem;
   border: 1px solid var(--border);

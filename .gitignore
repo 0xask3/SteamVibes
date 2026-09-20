@@ -16,12 +16,16 @@ __pycache__/
 # Node
 node_modules/
 dist/
+dist-ssr/
+*.local
+*.log
 
-# Claude Code's per-machine settings. Ignored here rather than relying on a
-# global gitignore, which only exists on the machine that wrote it.
+# Ignored here rather than in a global gitignore, which only exists on the
+# machine that wrote it.
 .claude/settings.local.json
 
 # Editors / OS
 .vscode/
 .idea/
 Thumbs.db
+.DS_Store

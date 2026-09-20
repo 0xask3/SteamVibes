@@ -1,14 +1,10 @@
 /**
- * Turns a ParsedQuery into removable chips.
+ * Turns a ParsedQuery into removable chips: the TypeScript half of
+ * ParsedQuery.describe() in backend/app/schemas.py, worded the same so the
+ * browser and the terminal print the same sentence.
  *
- * This is the TypeScript half of ParsedQuery.describe() in
- * backend/app/schemas.py. The labels are deliberately the same wording as the
- * CLI prints, so what you see in the browser and what you see in a terminal
- * are the same sentence.
- *
- * Each chip carries its own `remove`, which returns a NEW ParsedQuery rather
- * than mutating - React needs a fresh object to re-render, and the result is
- * posted straight back to the API as the chip-edit request.
+ * Each chip's `remove` returns a NEW ParsedQuery rather than mutating - React
+ * needs a fresh object, and the result is posted straight back to the API.
  */
 
 import type { ParsedQuery } from "./types";

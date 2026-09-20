@@ -7,9 +7,8 @@
 # Every app_id was verified present, embedded, and above the review threshold
 # before being written here. A typo would look exactly like a recall failure.
 #
-# `lang` splits the results table, because the whole point of Weekend 3 is
-# measuring how far German degrades against an English-centric embedding model.
-# Ten German queries, per BUILD_PLAN's "at least 8".
+# `lang` splits the results table, measuring how far German degrades against an
+# English-centric corpus. eval/queries_de.yaml asks all 118 in German.
 #
 # Several queries come straight from failures.md, marked with `from`. Those are
 # the ones that were observed to break, so a config change that fixes the
@@ -100,10 +99,9 @@
   expect: [914800]                    # Coffee Talk
 
 # ---------------------------------------------------------------- German ----
-# Same corpus, English descriptions. These measure the embedding model, not the
+# Same corpus, English descriptions, so these measure the model rather than the
 # data. Compound nouns are the thing to watch: Aufbauspiel, Koop-Modus,
-# Städtebau and Rätselspiel are single semantic units that an English-tuned
-# tokenizer shreds. See BUILD_PLAN, Weekend 3.
+# Städtebau and Rätselspiel are single units an English-tuned tokenizer shreds.
 
 - query: gemütliches Aufbauspiel für zwei
   lang: de
@@ -154,36 +152,16 @@
 # The two tiers are NOT comparable to each other. Compare a tier against itself
 # across configs.
 #
-# THIS TIER IS NOT THE LONG TAIL, which is what it was built for. It was meant
-# to hold games a popularity weight would delete, sampled at 50-5,000 reviews.
-# It does not: every target below lands in the 93rd-98th percentile of the
-# corpus by review count, median 97.1. Two mistakes, both mine:
+# THIS TIER IS NOT THE LONG TAIL, though it was built to be: every target lands
+# in the 93rd-98th percentile by review count, so recall here RISES with the
+# popularity weight (54.5% -> 68.2% from w=0.2 to w=1.0) while the median result
+# climbs from 165 reviews to 4,021. It cannot see the cost of the thing it was
+# meant to police - `tail` and the counter-metric in run_eval.py do that.
 #
-#   1. sample_longtail.sql used DISTINCT ON (tags[1]) ORDER BY total_reviews
-#      DESC, which returns the MOST-reviewed game per tag within the band - the
-#      top edge of the tail rather than the tail. I then picked the ones I
-#      recognised, biasing it further up.
-#   2. The queries were written while reading each game's short_description,
-#      which is part of embed_text. A near-paraphrase puts the target at cosine
-#      rank ~1, where the popularity term is arithmetically too small to shift
-#      it, so this tier reports "no harm" by construction.
-#
-# Measured: recall here RISES with the popularity weight (54.5% -> 68.2% between
-# w=0.2 and w=1.0) while the median returned result climbs from 165 reviews to
-# 4,021. The tier cannot see the cost of the thing it was built to police. The
-# tail-cost counter-metric in run_eval.py answers that instead, because it needs
-# no labels and no query authorship. This tier still answers a real question:
-# whether a detailed description finds the one game it describes.
-#
-# WRITTEN TARGET-FIRST - each game was picked first and the query written
-# afterwards without looking at what search returns. That removed the bias in
-# query selection and did nothing about the bias in target selection. See
-# failures.md #26.
-#
-# The first 22 below were hand-picked, which is why `sample_specific.sql` now
-# exists: it mirrors `sample_longtail.sql` exactly apart from the review band,
-# so the pair differs in target popularity and nothing else. The second 22 came
-# from it. Anything added here should too.
+# WRITTEN TARGET-FIRST: the game was picked, then the query written without
+# looking at what search returns. See failures.md #26. The first 22 were
+# hand-picked, which is why sample_specific.sql exists - it mirrors
+# sample_longtail.sql apart from the review band. Anything added should use it.
 
 - query: browsing a fake 1990s internet and reporting what you find
   lang: en
@@ -296,12 +274,10 @@
   expect: [1289810]                   # Siralim Ultimate
 
 # --- second batch, sampled by sample_specific.sql rather than hand-picked ----
-# The first 22 above were chosen by hand, which meant this tier and `tail`
-# differed in more than target popularity, and the "controlled comparison"
-# claimed in failures.md #28 was overstated. These come from the mirror sampler:
-# same DISTINCT ON, same md5 ordering, only the review band differs. They land
-# at an average 97.3rd percentile of the searchable corpus against the
-# hand-picked batch's 97.1, so the tier stays homogeneous.
+# Hand-picking the first 22 meant this tier and `tail` differed in more than
+# target popularity. These come from the mirror sampler - same DISTINCT ON,
+# same md5 ordering, only the band differs - and land at the 97.3rd percentile
+# against the hand-picked batch's 97.1, so the tier stays homogeneous.
 
 - query: a toy where you place colourful houses and a town builds itself
   lang: en

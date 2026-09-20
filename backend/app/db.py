@@ -1,8 +1,4 @@
-"""Engine and session factory.
-
-One engine per process. The ingest and embed jobs hold a session open across
-many batches, so the pool is small but long-lived.
-"""
+"""Engine and session factory. One engine per process."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -14,8 +10,7 @@ from app.config import settings
 
 engine: Engine = create_engine(
     settings.database_url,
-    # Postgres drops idle connections; check liveness rather than handing out
-    # a dead one mid-ingest.
+    # Postgres drops idle connections; never hand out a dead one mid-ingest.
     pool_pre_ping=True,
     future=True,
 )

@@ -4,37 +4,22 @@
     uv run python -m eval.run_parse_eval --reps 1        # quick look
     uv run python -m eval.run_parse_eval --show-failures # what went wrong
 
-Why this exists. `run_eval` cannot referee a parser change, and three changes in
-a row had to be justified without it (failures.md #33, #34, #35). Not one of the
-118 queries in `queries.yaml` names a price, a platform, a year, an age or a
-game, so every filter the parser extracts can only shrink the candidate set:
-recall can punish extraction and can never reward it. Strip the tag arrays out of
-the schema entirely and `--parse` scores exactly the no-parse baseline. An
-instrument that always votes for doing less is not measuring the parser.
-
-So this scores two things recall cannot see, and today's bugs were both kinds:
+`run_eval` cannot referee a parser change: not one of its 118 queries names a
+price, platform, year, age or game, so every filter the parser extracts can only
+shrink the candidate set. Recall punishes extraction and can never reward it -
+strip the tag arrays out of the schema and `--parse` scores exactly the no-parse
+baseline. So this scores what recall cannot see:
 
   MISSED    a constraint the query stated and the parser did not return.
-            "under 30$" silently dropped (#33), `multiplayer` dropped (#32),
-            `Hades` unreachable (#35).
-  INVENTED  a constraint the query never stated. Requiring `platforms` made the
-            model emit all three OSes on queries naming none (#33), and platforms
-            are ANDed, so it demanded Windows AND macOS AND Linux. That one was
-            found by hand and would have been free here.
+  INVENTED  a constraint the query never stated - caught without extra labels,
+            because any scalar not named in `expect` (or waived in `allow`)
+            must come back null.
 
-Invention is caught without labelling it: any scalar field not named in a case's
-`expect` (or waived in `allow`) is required to be null.
-
-REPS ARE NOT OPTIONAL. The parser is deterministic within a run and not across
-runs at temperature=0 - four queries moved between two runs of identical code
-(#33). A single pass would make this harness as unreliable as the thing it
-measures, so it defaults to 3 and reports a `flaky` column: fields whose value
-disagreed across reps. A flaky field is not a passing field.
-
-Tags are scored LENIENTLY and kept out of the headline, because the model picks
-different but defensible tags run to run and strict scoring would measure noise.
-
-Throwaway/eval category per CLAUDE.md: if it runs, it's fine.
+REPS ARE NOT OPTIONAL: the parser is deterministic within a run and NOT across
+runs at temperature=0, so this defaults to 3 and reports a `flaky` column. A
+flaky field is not a passing field. Tags are scored leniently and kept out of
+the headline - the model picks different but defensible tags run to run.
+See failures.md #32-35.
 """
 
 import argparse
@@ -75,10 +60,9 @@ class Case:
         self.allow: set[str] = set(raw.get("allow") or ())
         self.tags: list[str] = raw.get("tags") or []
         self.excludes: bool | None = raw.get("excludes")
-        # A documented limitation, expected to fail. Kept in the file and out of
-        # the score: dropping the hard cases is how a harness starts flattering
-        # itself, which queries.yaml already refuses to do with the tail targets
-        # pure cosine cannot retrieve. If one starts passing, remove the marker.
+        # A documented limitation, kept in the file and out of the score:
+        # dropping hard cases is how a harness starts flattering itself. If one
+        # starts passing, remove the marker.
         self.known_gap: bool = bool(raw.get("known_gap"))
 
     def scored_fields(self) -> list[str]:
@@ -186,10 +170,9 @@ def main() -> None:
                     f"  {field:<18} want {want!r:<22} got {got[0]!r:<22} {case.query[:44]}"
                 )
 
-        # A constraint that became a filter must stop steering the vector - the
-        # rule #34 exists for. min_reviews without the word gone means SQL and
-        # the embedding disagree about whether "popular" was handled, and the
-        # field check above passes happily while the query vector carries noise.
+        # A constraint that became a filter must stop steering the vector
+        # (failures.md #34): the field check above passes happily while the
+        # query vector still carries the word.
         if "min_reviews" in case.expect:
             leak_total += 1
             if any(wants_popular(p.semantic_query) for p in runs):

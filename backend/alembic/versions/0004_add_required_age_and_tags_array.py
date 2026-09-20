@@ -1,54 +1,23 @@
 """Add required_age and a denormalised tags array, dropping HNSW first.
 
-Two columns Weekend 2 needs.
+required_age makes "safe for a 7 year old" answerable, but only partially:
+Steam sets it where legally required, so 137,643 of 138,964 rows are 0 and age
+filtering must also exclude mature tags. That is what the array is for.
 
-required_age was in the source JSON and omitted from 0001. It is what makes
-"safe for a 7 year old" answerable - that query currently returns games tagged
-Violent and Nudity. Only a partial signal: 137,643 of 138,964 rows are 0
-because Steam sets it only where legally required, so age filtering must also
-exclude mature tags. That is what the array is for.
+games.tags duplicates game_tags deliberately - that table keeps the votes "top
+15 by votes" needs, while the array makes tag filtering one GIN operator
+instead of a join and GROUP BY. load_games.py writes both from the same dict.
+NOT NULL DEFAULT '{}', because NOT (NULL && ARRAY['Violent']) is NULL rather
+than true and would drop untagged games from "no violent games".
 
-games.tags duplicates game_tags deliberately. game_tags stays the source of
-truth because it carries votes, which "top 15 by votes" depends on. The array
-exists because tag filtering is the wrong shape for a normalised table:
-
-    -- normalised: join, group, count
-    WHERE app_id IN (SELECT app_id FROM game_tags WHERE tag = ANY(:tags)
-                     GROUP BY app_id HAVING count(*) = 2)
-
-    -- array + GIN: one operator
-    WHERE tags @> ARRAY['Co-op', 'Base Building']
-
-Both are kept in step by ingest/load_games.py, which writes them from the same
-source dict.
-
-NOT NULL DEFAULT '{}' rather than nullable: NULL breaks exclusion filters,
-because NOT (NULL && ARRAY['Violent']) is NULL rather than true, so an untagged
-game would be wrongly dropped from "no violent games".
-
-WHY THIS DROPS THE HNSW INDEX
------------------------------
-The backfill updates all 138,964 rows. Every update writes a new row version,
-and adding ~200 bytes per row fills pages, so most updates cannot stay HOT.
-Non-HOT updates require a new entry in *every* index on the table - including
-the 513MB HNSW graph over 130,651 vectors. HNSW inserts are expensive by
-design, which is exactly why 0003 built that index after the embed job rather
-than before it.
-
-Measured: with HNSW present the backfill was still running after several
-minutes. Dropping it first makes the same UPDATE cheap.
-
-The index is NOT recreated here. required_age cannot be backfilled from the
-database - the value lives only in games.json - so a `load_games --reload` has
-to follow this migration, and that reload updates every row again. Rebuilding
-HNSW before that would pay the same cost twice.
+DROPS HNSW FIRST: the backfill updates every row, each one needing a new entry
+in the graph, which left it still running after several minutes. It is not
+rebuilt here either, because required_age lives only in games.json, so a
+reload has to follow and would pay the cost twice.
 
     uv run alembic upgrade 0004
     uv run python -m ingest.load_games --reload
     uv run alembic upgrade head          # 0005 rebuilds HNSW
-
-Search still works between the two, just without the index. Same shape as
-Weekend 1: load everything, then build the vector index once.
 
 Revision ID: 0004
 Revises: 0003

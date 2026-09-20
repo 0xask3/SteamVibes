@@ -1,9 +1,8 @@
 # Backend: FastAPI over uvicorn, dependencies installed with uv from uv.lock.
 #
-# Ollama is NOT in this image and is not reachable at 127.0.0.1 from inside it.
-# The container talks to the host's Ollama through host.docker.internal, which
-# docker-compose.yml sets. That is deliberate: embedding 130k games needs the
-# GPU, and the GPU is on the host.
+# Ollama is NOT in this image, and 127.0.0.1 inside a container is the
+# container. docker-compose.yml points it at host.docker.internal, because
+# embedding needs the GPU and the GPU is on the host.
 
 FROM python:3.14-slim AS base
 
@@ -17,14 +16,12 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1
 
-# Dependencies first, as their own layer: they change far less often than the
-# source, so editing app/search.py does not reinstall SQLAlchemy.
+# Dependencies first, as their own layer: editing app/search.py should not
+# reinstall SQLAlchemy.
 COPY pyproject.toml uv.lock ./
-# --no-default-groups, not --no-dev: it also leaves out the `rerank` group, which
-# is 3.0GB of torch, triton and nvidia-* CUDA wheels this container cannot use -
-# compose pins RANK_METHOD=rrf because the GPU is unreachable from inside it.
-# Before this, --no-dev installed all of it and most of the first build was
-# spent downloading it. See the comment on the group in pyproject.toml.
+# --no-default-groups, not --no-dev: it also leaves out `rerank`, which is
+# 3.0GB of torch and CUDA wheels this container cannot use - compose pins
+# RANK_METHOD=rrf because the GPU is unreachable from inside it.
 RUN uv sync --frozen --no-default-groups
 
 COPY . .
@@ -33,8 +30,6 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 
-# Migrations before the server. `alembic upgrade head` is idempotent and this is
-# a single-replica setup, so there is no concurrent-migration race to worry
-# about. It is also the only way `docker compose up` reaches a working API on a
-# clean volume - the alternative is a README step that everyone forgets.
+# Migrations before the server: idempotent, single-replica, and the only way
+# `docker compose up` reaches a working API on a clean volume.
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

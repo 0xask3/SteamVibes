@@ -1,12 +1,8 @@
 """Recognise a game the query names, and borrow its tags.
 
-"extremely hard to beat game like elden ring" is the shape this exists for.
-The embedding cannot help: "elden ring" sits 133rd of 452 tags away from
-`Souls-like` (failures.md #20). But the ELDEN RING row already carries
-`Souls-like`, `Difficult` and `Dark Fantasy` - the answer is in the corpus, so
-look it up rather than infer it.
-
-No LLM involved. One indexed-ish scan, measured at 1-2ms.
+The embedding cannot: "elden ring" sits 133rd of 452 tags away from
+`Souls-like` (failures.md #20), while the ELDEN RING row already carries it.
+No LLM involved - one scan, 1-2ms.
 """
 
 import logging
@@ -21,19 +17,13 @@ from app.schemas import ParsedQuery
 
 logger = logging.getLogger(__name__)
 
-# Tags appended to the semantic query from a matched game. Six is roughly what
-# a Steam page shows above the fold, and enough to characterise a game without
-# swamping the user's own words in the embedded text.
+# Enough to characterise a game without swamping the user's own words.
 TAGS_FROM_REFERENCE = 6
 
-# Tags that contradict `multiplayer=False`, so a query that asked to play alone
-# never has them appended to its own embedded text. Read off the real 452-tag
-# vocabulary rather than guessed, because a tag that does not exist would sit
-# here doing nothing and look like it worked.
-#
-# `PvE`, `Team-Based` and `Social Deduction` are deliberately absent: a
-# singleplayer game can legitimately carry all three, so dropping them would
-# discard signal the query never objected to.
+# Tags that contradict `multiplayer=False`. Read off the real vocabulary, not
+# guessed - a tag that does not exist would sit here looking like it worked.
+# `PvE`, `Team-Based` and `Social Deduction` are absent on purpose: a
+# singleplayer game can legitimately carry all three.
 MULTIPLAYER_TAGS = frozenset(
     {
         "4 Player Local",
@@ -51,38 +41,19 @@ MULTIPLAYER_TAGS = frozenset(
     }
 )
 
-# Below this a name is too generic to be a deliberate reference. "Beat", "GAME"
-# and "Doll" are all real titles, and all four characters.
-#
-# 5, not 6, or `Hades`, `Stray` and `Forza` cannot be reached at all. Loosening
-# it applies to the multi-word candidates too, so it was measured across the
-# whole function rather than reasoned about: false positives over the 118 eval
-# queries stay at 4, exactly where they were. The real guard here has always
-# been TITLE_MATCH_MIN_REVIEWS - `Nothing` is seven characters and still cannot
-# match, because it has 9,260 reviews against a floor of 50,000.
+# 5, not 6, or `Hades`, `Stray` and `Forza` cannot be reached at all. The real
+# guard is TITLE_MATCH_MIN_REVIEWS. Re-measure the 4 false positives over the
+# 118 eval queries before loosening this.
 MIN_NAME_LENGTH = 5
 
-# Detected in code rather than added to the parser prompt: that prompt is
-# saturated, and three separate edits to it have now silently destroyed a
-# working filter (failures.md #13, #22). A missed phrasing costs one unwanted
-# result; a broken prompt costs a filter across every query.
+# In code rather than in the parser prompt: that prompt is full, and edits to it
+# have silently destroyed a working filter (failures.md #13, #22).
 _EXCLUDERS = r"(?:not|non|no|except|excepting|excluding|exclude|without|minus|besides)"
 
-# A word introduced by one of these is being NAMED, so it is worth testing as a
-# title even standing alone. Without this, `_word_ngrams` only produces 2-to-5
-# word windows and a one-word title can never be a candidate at all: `Hades` has
-# 279,741 reviews and no two-word window from "roguelikes similar to hades"
-# prefixes it. That silently broke tag borrowing for every single-word title -
-# Hades, Stray, Terraria, Factorio, Undertale - and for anyone typing just the
-# franchise word ("like forza").
-#
-# The cue is what makes it safe, and the alternative was measured: generating
-# every single word instead takes false positives over the 118 eval queries from
-# 4 to 24, because a bare word is not a claim about a title. "cozy farming sim
-# with fishing" matched Farming Simulator 22, and "first person puzzle game"
-# matched Persona 5 Royal - `person` prefixes `Persona`. Six wrong tags then go
-# into semantic_query. Gated on a cue it finds the same six titles and leaves
-# false positives at 4. See failures.md #35.
+# A ONE-WORD title is only a candidate when a reference cue precedes it.
+# `_word_ngrams` makes 2-to-5 word windows, so single-word names were
+# unreachable; generating every single word instead took false positives from 4
+# to 24 ("first person puzzle" matched `Persona 5 Royal`). See failures.md #35.
 _REFERENCE_CUE = re.compile(
     r"\b(?:like|similar\s+to|such\s+as|reminiscent\s+of|comparable\s+to"
     r"|excluding|exclude|except|without|besides|minus"
@@ -101,18 +72,15 @@ _EXCLUDE_SELF = re.compile(
 def wants_reference_excluded(query: str, matched_phrase: str | None = None) -> bool:
     """True when the query says to leave out the game it named.
 
-    Two phrasings, and both occur. "not including itself" refers to the game
-    obliquely; "excluding call of duty" names it again. The second needs the
-    phrase that actually matched, because only then do we know what to look
-    for an excluder in front of.
+    "not including itself" refers to it obliquely; "excluding call of duty"
+    names it again, which needs the phrase that actually matched.
     """
     if _EXCLUDE_SELF.search(query):
         return True
 
     if matched_phrase:
-        # An excluder within a few words before the title: "suggest some
-        # excluding call of duty". Bounded so "not scary ... like call of duty"
-        # does not read as excluding it.
+        # Bounded, so "not scary ... like call of duty" does not read as
+        # excluding it.
         near = re.compile(
             rf"\b{_EXCLUDERS}\b(?:\W+\w+){{0,2}}\W+{re.escape(matched_phrase)}",
             re.IGNORECASE,
@@ -126,16 +94,10 @@ def wants_reference_excluded(query: str, matched_phrase: str | None = None) -> b
 def _contradicts_filters(tag: str, parsed: ParsedQuery) -> bool:
     """True when borrowing `tag` would fight a filter the query already set.
 
-    The reference game's tags describe the game, not the request. Resident Evil
-    carries `Horror`, so "like resident evil but nothing scary" was excluding
-    Horror in SQL while asking the vector for it - the WHERE clause deleting a
-    category the ORDER BY was hunting. Same shape for `multiplayer=False` and
-    Call of Duty's `Multiplayer`.
-
-    Exact match only. A substring rule would catch `Dark Fantasy` under an
-    excluded `Fantasy`, but it would also make an excluded `Action` drop
-    `Action RPG` and `Action Roguelike`, which is a far larger behaviour change
-    than the defect justifies. See failures.md #32.
+    The game's tags describe the GAME, not the request: "like resident evil but
+    nothing scary" excluded Horror in SQL while appending it to the embedded
+    text. Exact match only - a substring rule would make an excluded `Action`
+    drop `Action RPG` too. See failures.md #32.
     """
     if tag in parsed.excluded_tags:
         return True
@@ -147,14 +109,9 @@ def _contradicts_filters(tag: str, parsed: ParsedQuery) -> bool:
 def apply_reference(parsed: ParsedQuery, query: str) -> ParsedQuery:
     """Fold a named game's tags into `parsed`, mutating and returning it.
 
-    Never raises and never narrows the result set on its own: the tags are
-    appended to semantic_query rather than added to required_tags. Requiring
-    all six of ELDEN RING's tags would return almost nothing, and picking a
-    subset would be arbitrary - biasing the query vector has no such cliff.
-
-    Reads `parsed.excluded_tags` and `parsed.multiplayer`, so it must run AFTER
-    the parse and after query_parser's code rules - which is where
-    _apply_code_rules calls it from.
+    Tags are appended to semantic_query, never added to required_tags:
+    requiring all six of a game's tags returns almost nothing. Reads
+    `excluded_tags` and `multiplayer`, so it must run after the code rules.
     """
     match = _find_referenced_game(query)
     if match is None:
@@ -166,10 +123,8 @@ def apply_reference(parsed: ParsedQuery, query: str) -> ParsedQuery:
     wanted = [tag for tag in tags[:TAGS_FROM_REFERENCE] if tag]
     borrowed = [tag for tag in wanted if not _contradicts_filters(tag, parsed)]
     if dropped := [tag for tag in wanted if tag not in borrowed]:
-        # Logged rather than dropped quietly, for the same reason _resolve_tag
-        # logs: this changes what gets embedded, and a silent change to the
-        # query vector is exactly the kind that produces plausible results
-        # forever.
+        # Logged because this changes what gets embedded, and a silent change to
+        # the query vector produces plausible results forever.
         logger.info("not borrowing %s - contradicts the query", ", ".join(dropped))
 
     if borrowed:
@@ -180,10 +135,8 @@ def apply_reference(parsed: ParsedQuery, query: str) -> ParsedQuery:
     # Only when asked. "like elden ring" without a negation should still be
     # allowed to return Elden Ring - it is the best match for itself.
     if wants_reference_excluded(query, phrase):
-        # The whole franchise, not the single entry. "excluding call of duty"
-        # means all of it; excluding only `Call of Duty®` left Modern Warfare
-        # and Black Ops Cold War in the results, which is not what was asked.
-        # The match was a prefix, so the exclusion is one too.
+        # The whole franchise: the match was a prefix, so the exclusion is one
+        # too - which also drops sequels and spinoffs.
         parsed.excluded_app_ids = _franchise_app_ids(phrase) or [app_id]
         logger.info(
             "excluding %d title(s) matching %r", len(parsed.excluded_app_ids), phrase
@@ -192,8 +145,8 @@ def apply_reference(parsed: ParsedQuery, query: str) -> ParsedQuery:
     return parsed
 
 
-# Enough for any real franchise - Call of Duty has ~30 entries on Steam - while
-# bounding the NOT IN if a short phrase somehow matches half the catalogue.
+# Enough for any real franchise, while bounding the NOT IN if a short phrase
+# matches half the catalogue.
 MAX_FRANCHISE_EXCLUSIONS = 100
 
 
@@ -214,8 +167,8 @@ def _franchise_app_ids(phrase: str | None) -> list[int]:
 def _word_ngrams(query: str, longest: int = 5, shortest: int = 2) -> list[str]:
     """Word windows from the query, longest first.
 
-    "like call of duty, but" yields "like call of duty", "call of duty, but",
-    ... down to two-word pairs. One of them is the game's name, or its opening.
+    One of them is a multi-word game's name, or its opening. Single words come
+    from `_REFERENCE_CUE` instead.
     """
     words = re.findall(r"[\w'®™:-]+", query)
     return [
@@ -228,25 +181,15 @@ def _word_ngrams(query: str, longest: int = 5, shortest: int = 2) -> list[str]:
 def _find_referenced_game(query: str) -> tuple[str, int, list[str], str | None] | None:
     """The best-known game whose name starts with a phrase from the query.
 
-    Prefix, not substring. Steam stores franchises with trademark and edition
-    suffixes - `Call of Duty®`, `DARK SOULS™: Prepare To Die Edition` - so the
-    name is *longer* than what anyone types. Asking whether the name appears
-    inside the query fails for exactly the games most likely to be referenced;
-    asking whether a phrase from the query opens the name succeeds, and needs
-    no pg_trgm extension or migration to do it.
-
-    The review floor is what makes it safe. Without it "nothing scary" matches
-    a game called `Nothing` and "under 20 dollars" matches `Dollar`, both real
-    titles. See settings.title_match_min_reviews.
-
-    Most-reviewed wins, so "dark souls" resolves to DARK SOULS III rather than
-    an obscure entry in the same franchise.
+    PREFIX, not substring: Steam names carry trademark and edition suffixes
+    (`Call of Duty®`), so they are longer than what anyone types, and asking
+    whether the name sits inside the query fails for exactly the games people
+    reference. No pg_trgm, no migration - failures.md #23. The review floor is
+    what makes it safe, and most-reviewed wins.
     """
-    # Cued singles go on the END, after the longest-first windows, so a
-    # multi-word title still wins: "excluding call of duty" must resolve the
-    # phrase to `call of duty`, not to the cued `call`. That phrase is what
-    # wants_reference_excluded() looks for an excluder in front of, so the order
-    # is load-bearing beyond just picking the right game.
+    # Cued singles go LAST, after the longest-first windows, so "excluding call
+    # of duty" resolves the phrase to `call of duty` and not to `call` - and
+    # that phrase is what wants_reference_excluded() reads.
     cued = [m.group(1) for m in _REFERENCE_CUE.finditer(query)]
     candidates = [
         gram
@@ -274,9 +217,8 @@ def _find_referenced_game(query: str) -> tuple[str, int, list[str], str | None] 
     if row is None:
         return None
 
-    # Which phrase actually opened the name. Needed to spot "excluding <title>"
-    # - we have to know where the title sits in the query to look in front of
-    # it. Longest first, so "call of duty" wins over "call of".
+    # Which phrase actually opened the name, so "excluding <title>" knows where
+    # to look. Longest first, so "call of duty" wins over "call of".
     lowered = row.name.lower()
     phrase = next((g for g in candidates if lowered.startswith(g.lower())), None)
 

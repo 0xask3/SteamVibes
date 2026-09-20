@@ -1,12 +1,9 @@
 """Turn a natural-language query into a ParsedQuery.
 
-The hard constraints come out as SQL filters; whatever is left is the vibe and
-goes to the embedding model.
-
-Per CLAUDE.md, failures here are expected rather than exceptional. Anything
-that goes wrong - the model is missing, the JSON is nonsense, a field is the
-wrong type - degrades to pure semantic search on the raw text, with a log line.
-Never a bare except, never silence.
+Hard constraints become SQL filters; whatever is left is the vibe and goes to
+the embedding model. Failures are expected rather than exceptional: anything
+that goes wrong degrades to pure semantic search on the raw text, with a log
+line. Never a bare except, never silence.
 """
 
 import difflib
@@ -28,18 +25,14 @@ from app.title_lookup import apply_reference
 
 logger = logging.getLogger(__name__)
 
-# Above this, difflib's ratio is a confident match: "Base Building" ->
-# "Base-Building" scores ~0.96. Below it we drop the tag rather than guess,
-# because a wrong tag returns zero rows with no error.
+# Above this, difflib's ratio is a confident match ("Base Building" ->
+# "Base-Building" scores ~0.96). Below it, drop the tag rather than guess: a
+# wrong tag returns zero rows with no error.
 FUZZY_CUTOFF = 0.85
 
-# Layout is tuned, not arbitrary. The ~1,400-token tag list goes LAST, directly
-# above the query: when it sat at the top instead, tag extraction collapsed -
-# query 1 lost both Co-op and Base-Building despite the worked example naming
-# them. The scalar rules sit above it and hold their own on wording alone.
-#
-# The two pulls are in tension. Whichever block sits nearest the query wins, so
-# any future edit here needs eval/compare_parsers.py re-run, not just a read.
+# The layout is tuned and the two blocks compete - whichever sits nearest the
+# query wins. Vocabulary last keeps tag extraction; vocabulary first collapses
+# it. Never edit this without re-running eval/compare_parsers.py.
 SYSTEM_PROMPT = """\
 You convert a player's description of a game into a search filter.
 
@@ -95,25 +88,15 @@ capitals:
 """
 
 
-# "Popular" is detected here rather than in the prompt. Tried as a prompt rule
-# in the scalar block - on the theory that the two earlier regressions came
-# from editing the tag block - and it cost `not War` on one query and
-# `multiplayer` on another. Third confirmation that the prompt is full; see
-# failures.md #22. Numbers in the query ("at least 500 reviews") are NOT
-# handled as a result, which is the price of not touching the prompt.
-#
-# `beliebt\w*`, not bare `beliebt`, to match the `bekannt\w*` beside it. Nobody
-# writes the uninflected adjective: "beliebte Aufbauspiele" is the ordinary
-# form, and it fired NOTHING until the wildcard was added. `beliebig`
-# ("arbitrary") is safely excluded - it diverges before the `t`.
+# Detected here rather than in the prompt: the prompt is full, and adding this
+# to it destroyed a working filter (failures.md #22). German adjectives inflect,
+# so `beliebt\w*` - bare `beliebt` matches nothing anyone writes.
 _POPULAR = re.compile(
     r"\b(?:popular|well[-\s]known|famous|best[-\s]?selling|beliebt\w*|bekannt\w*)\b",
     re.IGNORECASE,
 )
 
-# Punctuation stranded by removing a word mid-sentence: "..., which is also
-# popular" would otherwise leave a trailing "which is also" and a dangling
-# comma in the text being embedded.
+# Punctuation stranded by removing a word mid-sentence.
 _DANGLING = re.compile(r"[\s,;.]+$|^[\s,;.]+")
 
 
@@ -125,34 +108,19 @@ def wants_popular(query: str) -> bool:
 def _strip_popular(query: str) -> str:
     """Remove the popularity words that `min_reviews` has already consumed.
 
-    Uses the same pattern that detected them, so the trigger and the removal
-    cannot drift apart.
-
-    A constraint converted into SQL must stop steering the vector. "popular"
-    says nothing about what a game IS, so leaving it in `semantic_query` embeds
-    a word that can only match noise - it survived into the embedded text on 8
-    of 9 queries that asked for it. Same class as failures.md #32, where
-    borrowed tags contradicted the filters just extracted.
-
-    Returns "" when the query was nothing but popularity words; the caller
-    decides what to do about that rather than embedding an empty string.
+    A constraint converted into a filter must stop steering the vector
+    (failures.md #34). Reuses the detecting pattern so trigger and removal
+    cannot drift apart, and returns "" when nothing else was in the query -
+    the caller decides what to do rather than embedding an empty string.
     """
     cleaned = _POPULAR.sub(" ", query)
     cleaned = re.sub(r"\s+", " ", cleaned)
     return _DANGLING.sub("", cleaned).strip()
 
 
-# Same reasoning as _POPULAR, from a different direction: `multiplayer` IS in
-# the prompt and the model usually fills it, but it falls off the end of a long
-# query. Measured at temperature 0 - "call of duty like game, single player",
-# "... under 20 dollars, single player" and "... also popular, single player"
-# all give False, while "call of duty like game, but not including itself, also
-# popular, single player" gives None. Move "single player" earlier in that same
-# sentence and it comes back. Four competing clauses is the trigger, not any
-# one of them. See failures.md #32.
-#
-# The prompt is NOT the place to fix that. It is full, and three separate edits
-# have each silently destroyed a working filter (failures.md #13, #22).
+# A code rule is also the net under an intent the prompt already holds:
+# `multiplayer` is in the prompt and the model fills it correctly until four
+# clauses compete, then returns null. See failures.md #32.
 _SINGLEPLAYER = re.compile(
     r"\b(?:single[-\s]?player|solo|singleplayer|einzelspieler|allein\w*)\b"
     r"|\bplay(?:ing)?\s+(?:alone|by\s+myself|on\s+my\s+own)\b"
@@ -160,10 +128,8 @@ _SINGLEPLAYER = re.compile(
     re.IGNORECASE,
 )
 
-# "not single player", "kein Einzelspieler", "no solo". Without this the regex
-# reads a negation as a request and inverts the filter, which is worse than the
-# bug it fixes: a missing filter returns too much, a backwards one returns
-# confidently wrong results. Mirrors title_lookup._EXCLUDERS.
+# Every such regex needs a negation guard. A missing filter returns too much; a
+# backwards one returns confidently wrong results.
 _NOT_SINGLEPLAYER = re.compile(
     r"\b(?:not|no|non|without|except|excluding|kein\w*|nicht)\b\W+(?:\w+\W+){0,2}?"
     r"(?:single[-\s]?player|solo|singleplayer|einzelspieler|allein\w*)\b",
@@ -174,41 +140,24 @@ _NOT_SINGLEPLAYER = re.compile(
 def wants_singleplayer(query: str) -> bool:
     """True when the query explicitly asks to play alone.
 
-    Deliberately one-directional. There is no `wants_multiplayer()`: the model
-    handles co-op and versus correctly in every probe, and a `True` regex is the
-    riskier half - "no multiplayer" contains "multiplayer", so it would need the
-    same negation guard to buy a fix for a failure never observed.
+    One-directional on purpose: there is no `wants_multiplayer()`, because "no
+    multiplayer" contains "multiplayer" and the model was never observed
+    getting that direction wrong.
     """
     if _NOT_SINGLEPLAYER.search(query):
         return False
     return _SINGLEPLAYER.search(query) is not None
 
 
-# Fields the model must never fill. They are derived in code from the
-# referenced-game lookup, and the model has no way to know a real app_id -
-# left in the schema it invents plausible integers, and a wrong one silently
-# removes a real result. Stripping them also saves generation tokens.
+# Derived in code, so the model never sees them: it cannot know a real app_id,
+# and a hallucinated one silently removes a real result.
 _CODE_ONLY_FIELDS = ("reference_game", "excluded_app_ids", "min_reviews")
 
-# Fields the model MUST emit a key for, even if that key is null.
-#
-# Pydantic marks a field optional whenever it has a default, so every field here
-# but semantic_query was optional - and Ollama's `format` compiles an optional
-# property into a grammar branch the model may simply skip. It did: asked for
-# "...no wars on linux under 30$" it returned max_price_usd ABSENT, not null,
-# while correctly stripping "under 30$" out of semantic_query. Absent and "no
-# price requested" are the same thing downstream, so the filter vanished with no
-# error. Across the compare_parsers set the shipped schema dropped required_tags
-# on 64% of parses. See failures.md #33.
-#
-# Listing them here also restores the field ORDER CLAUDE.md depends on. Optional
-# properties let the model emit keys in any order, and it put semantic_query
-# FIRST - the exact thing declaring it last was meant to prevent.
-#
-# required_tags and excluded_tags are deliberately NOT here. Forcing the arrays
-# too costs 15.9 points of tail recall (47.7% against 63.6%): a tag the model
-# invents for a vague query becomes a filter, and long-tail games are the least
-# likely to carry it. They stay optional so the model can decline.
+# Fields the model MUST emit a key for, even if null. An optional property is a
+# grammar branch the model may skip, and skipping is indistinguishable from "not
+# asked for"; it also restores the field order. The tag ARRAYS stay optional
+# deliberately - forcing them makes the model invent a tag for a vague query and
+# costs 15.9 points of tail recall. See failures.md #33.
 _REQUIRED_FIELDS = (
     "max_price_usd",
     "min_price_usd",
@@ -222,27 +171,19 @@ _REQUIRED_FIELDS = (
 
 @lru_cache(maxsize=1)
 def _llm_schema() -> dict[str, Any]:
-    """ParsedQuery's JSON schema, minus the code-only fields.
-
-    None of the code-only fields is in `required` - all three carry defaults -
-    so removing the properties leaves a valid schema, and the remaining field
-    order is untouched. semantic_query must still come last. See CLAUDE.md.
-    """
+    """ParsedQuery's JSON schema, minus the code-only fields."""
     schema = ParsedQuery.model_json_schema()
     properties = schema.get("properties", {})
     for field in _CODE_ONLY_FIELDS:
         properties.pop(field, None)
-    # Intersected with properties rather than assigned blindly: a field renamed
-    # in ParsedQuery would otherwise put a name in `required` that no property
-    # satisfies, and Ollama would reject every parse rather than one field.
+    # Intersected rather than assigned: a renamed field would otherwise require
+    # a property that does not exist, and Ollama would reject every parse.
     schema["required"] = [f for f in _REQUIRED_FIELDS if f in properties]
     return schema
 
 
-# How long a NON-EMPTY vocabulary is trusted before it is read again. The read is
-# 52ms against a ~1,200ms parse, so a refresh every 5 minutes costs nothing
-# measurable, and 5 minutes of staleness sits well inside the ~22-minute embed
-# that follows every load - the vocabulary is complete before the corpus is.
+# How long a NON-EMPTY vocabulary is trusted. The read is 52ms against a
+# ~1,200ms parse, so refreshing costs nothing measurable.
 VOCABULARY_TTL_S = 300.0
 
 _vocabulary: tuple[str, ...] = ()
@@ -252,19 +193,11 @@ _vocabulary_read_at = 0.0
 def get_tag_vocabulary() -> tuple[str, ...]:
     """Every real tag. All 452 fit in the prompt in ~1,400 tokens.
 
-    BUILD_PLAN.md assumed a top-200 subset would be needed. Passing all of them
-    removes a failure class: a tag that exists but was never shown to the model.
-
-    Not an lru_cache, and that is a fix. `docker compose up` starts the API
-    BEFORE ingest, and the startup warmup parses a query, so the cache held the
-    tags of an empty database for the life of the process: after ingest the
-    container extracted no tags at all, and the explanation check could not scan
-    prose. Nothing logged it; restarting the backend was the only cure. So an
-    empty result is never cached, and a non-empty one expires - a search during
-    `load_games` would otherwise pin a partial list just as permanently.
-
-    No lock: threads that race past an expiry each run the same idempotent read
-    and store equal tuples. lru_cache did not lock around the call either.
+    Deliberately not an lru_cache: `docker compose up` starts the API before
+    ingest, so a cache would hold the tags of an EMPTY database for the life of
+    the process. An empty result is never cached, and a non-empty one expires,
+    because a search during `load_games` would otherwise pin a partial list.
+    No lock - racing threads run the same idempotent read.
     """
     global _vocabulary, _vocabulary_read_at
     now = time.monotonic()
@@ -276,9 +209,8 @@ def get_tag_vocabulary() -> tuple[str, ...]:
             session.scalars(select(GameTag.tag).distinct().order_by(GameTag.tag)).all()
         )
     if not tags:
-        # Degraded, not broken: parsing still returns the scalar filters. But
-        # the response looks exactly like a query with no tag intent, so this
-        # line is the only place the state is visible.
+        # Degraded, not broken - but the response looks exactly like a query
+        # with no tag intent, so this line is the only visible trace.
         logger.warning(
             "tag vocabulary is empty - no games loaded yet, so the parser "
             "extracts no tags and the explanation check cannot scan prose"
@@ -317,23 +249,9 @@ def _resolve_tags(candidates: list[str], vocabulary: tuple[str, ...]) -> list[st
     return [tag for tag in resolved if tag is not None]
 
 
-# The cost of making `platforms` required: it must now emit the key, and on a
-# query naming no OS it sometimes fills all three rather than an empty list -
-# "cheap relaxing puzzle games, nothing scary" did it 3 times out of 3. Platforms
-# are ANDed in search, so that silently demands a game running on Windows AND
-# macOS AND Linux. Measured at 1 of 12 no-OS queries, and 0 of 40 eval queries.
-#
-# Leaving `platforms` optional instead is worse: the key then goes missing on
-# "on linux under 30$" and the real filter disappears, which is the bug this
-# whole change exists to fix.
-#
-# So it is guarded here rather than in the prompt, per the convention in
-# CLAUDE.md. The guard only fires when the query names no OS at all, so a genuine
-# "runs on windows, mac and linux" survives - and its failure mode is widening
-# the results, never narrowing them onto something unasked for.
-# Only the three real values of `Platform`. "steam deck" deliberately absent:
-# it is not one of them, so listing it would only stop the guard firing on a
-# query that still cannot mean "all three".
+# Making a field required can make the model invent a value for it: asked for no
+# OS it sometimes fills all three, and platforms are ANDed. Only the three real
+# `Platform` values, so the guard cannot fire on a query that named one.
 _OS_NAMED = re.compile(r"\b(?:windows|linux|mac(?:os)?|osx)\b", re.IGNORECASE)
 
 
@@ -346,9 +264,8 @@ def _drop_invented_platforms(parsed: ParsedQuery, text: str) -> None:
 def parse_query(text: str, model: str | None = None) -> ParsedQuery:
     """Natural language in, ParsedQuery out.
 
-    Never raises. On any failure the return value is a ParsedQuery carrying the
-    raw text and no filters, which is exactly what search did before the parser
-    existed - a degraded path that is already known to work.
+    Never raises. On any failure it returns a ParsedQuery carrying the raw text
+    and no filters - the pre-parser behaviour, which is known to work.
     """
     vocabulary = get_tag_vocabulary()
 
@@ -360,31 +277,24 @@ def parse_query(text: str, model: str | None = None) -> ParsedQuery:
             model=model,
         )
     except Exception:
-        # Transport failure, missing model, non-JSON content. Log it with the
-        # query so it can be reproduced, then fall back. The referenced-game
-        # lookup is pure SQL, so it still applies - "like elden ring" works
-        # even with no chat model at all.
+        # Transport failure, missing model, non-JSON content. The code rules
+        # below still apply, so "like elden ring" works with no chat model.
         logger.warning("parser call failed for %r, falling back", text, exc_info=True)
-        # Counted, not just logged. A fallback returns a bare ParsedQuery, which
-        # downstream is INDISTINGUISHABLE from a query that genuinely carried no
-        # constraints - so without this /api/stats could not see the one
-        # degraded path in the pipeline that leaves no trace on the response.
-        # Split from the parse failure below because they are different bugs:
-        # this one is Ollama being unreachable or the model missing.
+        # Counted because a bare ParsedQuery is indistinguishable downstream
+        # from a query that carried no constraints. Split from the bad-output
+        # case below: unreachable Ollama and an unusable answer need different
+        # fixes.
         note("parse_call_failed")
         return _apply_code_rules(ParsedQuery(semantic_query=text), text)
 
     try:
         parsed = ParsedQuery.model_validate(raw)
     except Exception:
-        # Schema-valid JSON can still be semantically wrong. Log the raw output
-        # rather than just the exception - that is what makes it debuggable.
+        # Log the raw output, not just the exception - that is what makes a
+        # schema-valid but semantically wrong answer debuggable.
         logger.warning(
             "parser returned unusable output for %r: %r", text, raw, exc_info=True
         )
-        # The model answered and the answer did not validate - a prompt or model
-        # problem, where the one above is an infrastructure problem. Same
-        # product outcome, entirely different fix.
         note("parse_bad_output")
         return _apply_code_rules(ParsedQuery(semantic_query=text), text)
 
@@ -408,34 +318,27 @@ def parse_query(text: str, model: str | None = None) -> ParsedQuery:
 def _apply_code_rules(parsed: ParsedQuery, text: str) -> ParsedQuery:
     """Intents read from the query text rather than from the model.
 
-    Everything here was either measured to break the prompt when added to it,
-    or is not something a language model can know - a real app_id, for
-    instance. Applied on the fallback paths too, so a query naming a game or
-    asking for popular titles still works with no chat model at all.
+    Everything here either broke the prompt when added to it or is something a
+    model cannot know. Applied on the fallback paths too.
     """
     if parsed.min_reviews is None and wants_popular(text):
         parsed.min_reviews = settings.popular_min_reviews
         logger.info("query asks for popular, min_reviews=%d", parsed.min_reviews)
-        # Strip in the same branch that consumed the intent, so the filter and
-        # the text can never disagree about whether it was handled. Guarded:
-        # parse_query's empty-semantic_query check runs BEFORE this function, so
-        # it cannot catch a query of literally "popular" - embedding "" would be
-        # worse than embedding a useless word.
+        # Stripped in the same branch that consumed the intent, so filter and
+        # text cannot disagree. Guarded: parse_query's empty check runs before
+        # this, so a query of literally "popular" would embed "".
         stripped = _strip_popular(parsed.semantic_query)
         if stripped:
             parsed.semantic_query = stripped
         else:
             logger.info("not stripping %r - nothing would be left", parsed.semantic_query)
 
-    # Fills, never overrides - the same shape as the rule above. The model was
-    # only ever observed returning NO value here, not a wrong one, and an
-    # override would break a mixed ask like "single player or co-op" that the
-    # model reads correctly.
+    # Fills, never overrides: the model was only observed returning no value
+    # here, and an override would break "single player or co-op".
     if parsed.multiplayer is None and wants_singleplayer(text):
         parsed.multiplayer = False
         logger.info("query asks to play alone, multiplayer=False")
 
-    # Last, and after the rules above on purpose: it reads parsed.multiplayer
-    # and parsed.excluded_tags to decide which of the referenced game's tags it
-    # is allowed to borrow.
+    # Last on purpose: it reads parsed.multiplayer and parsed.excluded_tags to
+    # decide which of the referenced game's tags it may borrow.
     return apply_reference(parsed, text)

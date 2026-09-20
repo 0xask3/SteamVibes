@@ -1,39 +1,31 @@
 """Paired significance tests over per-query scores.
 
-CLAUDE.md has required these since failures.md #37 and until now they lived in a
-scratch script: "Run a paired bootstrap over queries and a sign test BEFORE
-writing a comparison table. eval/ has no harness for this yet."
+REPRODUCIBLE IS NOT DISTINGUISHABLE: the eval's ~1-point floor measures
+re-running ONE config, while the uncertainty in a DIFFERENCE between two is far
+larger, because ~100 of 118 queries score identically and the result rests on
+the handful that move. Three wrong headlines came from reading a point estimate
+as a result (failures.md #37).
 
-The reason they are required is that REPRODUCIBLE IS NOT DISTINGUISHABLE. The
-eval's ~1-point floor measures re-running one config; the uncertainty in a
-DIFFERENCE between two configs is far larger, because ~100 of 118 queries score
-identically and the difference rests on the handful that move. Three wrong
-headlines came out of reading a point estimate as a result.
-
-Both tests are PAIRED - they compare the two arms query by query rather than
-comparing two averages. That is what makes the ~100 ties cost nothing instead of
-diluting the signal, and it is only valid when the two score lists are aligned:
-index i must be the same query, or the same target, in both.
+Both tests are PAIRED - query by query, not average against average - which is
+what makes the ties cost nothing. Only valid when the two lists are aligned:
+index i must be the same query in both.
 """
 
 import math
 import random
 
-# Fixed so a reported interval is reproducible. Resampling noise at 10,000
-# draws is well under a tenth of a point, but "well under" is not "none", and a
-# CI that moves between two runs of the same data invites exactly the
-# over-reading these tests exist to prevent.
+# Fixed, so a reported interval is reproducible: a CI that moves between two
+# runs of the same data invites the over-reading these tests exist to prevent.
 BOOTSTRAP_SEED = 20260908
 BOOTSTRAP_RESAMPLES = 10_000
 
 
 def sign_test(a: list[float], b: list[float]) -> tuple[int, int, int, float]:
-    """Wins for `b` over `a`, losses, ties, and a two-sided p-value.
+    """Wins for `b` over `a`, losses, ties, and a TWO-SIDED p-value.
 
-    Ties are DISCARDED rather than counted, which is the standard sign test and
-    is also the honest thing here: a query both arms get right says nothing
-    about which is better. With 102 of 118 queries identical between two
-    rerankers, the test is effectively n=16 - and reporting that is the point.
+    Ties are discarded, as the standard sign test does: a query both arms get
+    right says nothing about which is better. With 102 of 118 identical, the
+    test is effectively n=16 - and reporting that is the point.
     """
     wins = sum(1 for x, y in zip(a, b) if y > x)
     losses = sum(1 for x, y in zip(a, b) if y < x)
@@ -90,9 +82,8 @@ def report(label_a: str, label_b: str, a: list[float], b: list[float]) -> None:
     print(
         f"  {'sign test':<12}{wins:>4} wins, {losses} losses, {ties} ties   p = {p:.3f}"
     )
-    # The interval is the result; the point estimate is not. Said in the output
-    # rather than only in a docstring, because the point estimate is what gets
-    # copied into a table.
+    # The interval is the result, not the point estimate - said in the output,
+    # because the point estimate is what gets copied into a table.
     if low <= 0 <= high:
         print("  VERDICT     not distinguishable - the interval contains zero")
     else:
@@ -102,9 +93,8 @@ def report(label_a: str, label_b: str, a: list[float], b: list[float]) -> None:
 def self_test() -> None:
     """Check both tests against values worked out by hand.
 
-    run_explain_eval's rule, applied here: a checker that has never gone red is
-    not known to work, and these two functions are now the gate on every
-    comparison claim in the project.
+    A checker that has never gone red is not known to work, and these two are
+    the gate on every comparison claim here.
 
         uv run python -m eval.paired
     """
@@ -118,13 +108,10 @@ def self_test() -> None:
         f"  identical arms      {wins}W {losses}L {ties}T  p={p:.3f}  CI [0.0%, 0.0%]"
     )
 
-    # 2. The Qwen3-vs-bge split recorded in CLAUDE.md: 11 wins, 5 losses.
-    #    THIS HARNESS IS TWO-SIDED. CLAUDE.md's recorded p=0.105 is the
-    #    ONE-SIDED tail, so the two numbers describe the same data under
-    #    different conventions and must not be compared to each other. Two-sided
-    #    is the default here because "are these two models different" is not a
-    #    directional hypothesis, and picking the direction after seeing which
-    #    model won is what makes a one-sided test flattering.
+    # 2. The Qwen3-vs-bge split: 11 wins, 5 losses. THIS HARNESS IS TWO-SIDED,
+    #    and CLAUDE.md's recorded p=0.105 is the ONE-SIDED tail of the same
+    #    data - never compare the two. Choosing the direction after seeing which
+    #    arm won is what makes a one-sided test flattering.
     a = [0.0] * 11 + [1.0] * 5
     b = [1.0] * 11 + [0.0] * 5
     wins, losses, ties, p = sign_test(a, b)
@@ -133,8 +120,8 @@ def self_test() -> None:
     print(f"  11W 5L (CLAUDE.md)  p={p:.4f} two-sided, 0.1051 one-sided - same data")
 
     # 3. A constant difference has no variance, so the interval collapses onto
-    #    it. Catches a bootstrap that resamples the two arms independently and
-    #    therefore breaks the pairing - the single easiest way to get this wrong.
+    #    it. Catches a bootstrap that resamples the arms independently and so
+    #    breaks the pairing - the easiest way to get this wrong.
     a = [0.0, 0.25, 0.5, 1.0] * 5
     b = [x + 0.25 if x < 1.0 else x for x in a]
     constant = [0.5, 0.75, 0.75, 1.0] * 5
@@ -145,8 +132,7 @@ def self_test() -> None:
     print(f"  strictly better     {wins}W {losses}L {ties}T  p={p:.5f}")
 
     # 4. A one-query difference over many ties must NOT come out significant.
-    #    This is the failure mode the whole module exists for: 102 of 118
-    #    identical and a point estimate that looks like a result.
+    #    This is the failure mode the module exists for.
     a = [1.0] * 60 + [0.0]
     b = [1.0] * 60 + [1.0]
     wins, losses, ties, p = sign_test(a, b)

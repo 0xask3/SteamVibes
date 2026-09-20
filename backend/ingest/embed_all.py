@@ -16,15 +16,13 @@ Measured rates over the whole corpus (130,651 rows), finished runs only:
     snowflake-arctic-embed2    97.7/sec    22:16
     qwen3-embedding:0.6b       82.3/sec    26:28
 
-Read these off a finished run, never off a sample. This docstring carried
-~51/sec for bge-m3 for a while, taken from an early tqdm reading, and it made
-the model look twice as expensive as it is; a 9-second watch window separately
-put qwen3 at ~128/sec, wrong the other way. Both errors have the same cause -
-at the start the model is still loading and the running average has almost no
+Read these off a FINISHED run, never off a sample: an early tqdm reading put
+bge-m3 at ~51/sec and a 9-second window put qwen3 at ~128/sec, wrong in both
+directions, because the model is still loading and the running average has no
 history to dilute it.
 
-Changing EMBED_MODEL needs --reload, and needs the HNSW index dropped first.
-Both are enforced below rather than left to memory.
+Changing EMBED_MODEL needs --reload and the HNSW index dropped first. Both are
+enforced below rather than left to memory.
 """
 
 import argparse
@@ -119,9 +117,8 @@ def clear_vectors() -> int:
     wrong model. Named --reload to match load_games.
     """
     with session_scope() as session:
-        # Counted separately rather than read off the UPDATE: Session.execute()
-        # is typed as Result, which has no rowcount, and a cast to CursorResult
-        # buys nothing over one cheap count.
+        # Counted separately: Session.execute() is typed as Result, which has
+        # no rowcount, and a cast buys nothing over one cheap count.
         cleared = (
             session.scalar(
                 select(func.count())
@@ -197,8 +194,7 @@ def main() -> None:
     print(f"model:      {settings.embed_model} ({EMBEDDING_DIM} dims)")
     print(f"endpoint:   {settings.ollama_base_url}")
     print(f"batch size: {args.batch_size}")
-    # Part of what every stored vector means, so it belongs in the run's output:
-    # reading it back later is the only way to know what was actually embedded.
+    # Part of what every stored vector means, so it belongs in the output.
     print(f"doc prefix: {document_prefix()!r}")
     print(f"pending:    {pending:,}\n")
 

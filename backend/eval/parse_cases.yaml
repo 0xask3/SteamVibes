@@ -26,11 +26,9 @@
 #   excludes true when excluded_app_ids must be non-empty. The ids themselves
 #            are not labelled - they come from a franchise prefix scan and
 #            change with the corpus.
-#   known_gap  a documented limitation that is EXPECTED to fail. Reported on its
-#            own line and kept out of the score, so the headline is not
-#            flattered by leaving the hard cases out - the same reason
-#            queries.yaml keeps targets pure cosine cannot retrieve. If one
-#            starts passing, that is a real result and the marker comes off.
+#   known_gap  a documented limitation EXPECTED to fail. Reported on its own
+#            line and kept out of the score, so dropping hard cases cannot
+#            flatter the headline. If one starts passing, remove the marker.
 
 # ---------------------------------------------------------------- price
 # max_price_usd is the FIRST field in the schema, so it is never "dropped off

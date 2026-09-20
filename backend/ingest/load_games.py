@@ -1,12 +1,10 @@
 """Load data/games.json into Postgres.
 
-Idempotent and resumable, per CLAUDE.md. Re-running skips games already
-present; --reload forces a full upsert pass. An interrupt costs at most one
-batch, never the whole run.
+Idempotent and resumable: re-running skips games already present, --reload
+forces a full upsert pass, and an interrupt costs at most one batch.
 
-embed_text is built here rather than in the embed job: the tags dict is
-already in memory at this point, so picking the top 15 by votes is free.
-Doing it later would mean a second traversal of 1.18M tag rows.
+embed_text is built here rather than in the embed job, because the tags dict is
+already in memory - doing it later would mean a second pass over 1.18M rows.
 """
 
 import argparse
@@ -191,13 +189,10 @@ def upsert_batch(batch: list[tuple[int, dict[str, Any]]]) -> None:
             if col.name not in PRESERVE_ON_CONFLICT
         }
 
-        # Keep the embedding unless the text it was built from changed. A
-        # refreshed games.json can alter a description or its tags, and a vector
-        # for text that no longer exists is worse than no vector at all: the
-        # embed job skips non-NULL rows, so it would never be noticed. Nulling
-        # it here puts the row straight back into the embed job's queue.
-        # is_distinct_from rather than != so NULL on either side compares
-        # correctly.
+        # Keep the embedding unless the text it was built from changed: the
+        # embed job skips non-NULL rows, so a stale vector would never be
+        # noticed, while nulling it re-queues the row. is_distinct_from rather
+        # than != so NULL on either side compares correctly.
         table = Game.__table__
         text_changed = table.c.embed_text.is_distinct_from(stmt.excluded.embed_text)
         assignments["embedding"] = case(

@@ -1,20 +1,16 @@
-# `docker compose up` brings up db, backend and frontend. Ollama is NOT included
-# by default: embedding 130,651 games needs the GPU, and the GPU is on the host.
-# The containerised Ollama is behind a profile so it cannot accidentally fight
-# the host's for port 11434 - start it with `--profile ollama` only if you have
-# no host install and accept CPU inference.
+# `docker compose up` brings up db, backend and frontend. Ollama sits behind a
+# profile so it cannot fight the host's install for port 11434 - embedding
+# needs the GPU, and the GPU is on the host.
 #
-# What this does NOT do is populate the database. A clean volume comes up with
-# an empty schema; loading and embedding is ~25 minutes and needs the host GPU,
-# so it stays a documented step. See README.md.
+# This does NOT populate the database: a clean volume comes up with an empty
+# schema, and ingest is a documented host-side step. See README.md.
 
 services:
   db:
     image: pgvector/pgvector:pg16
-    # Docker defaults /dev/shm to 64MB. Postgres coordinates parallel workers
-    # through shared memory, so building the HNSW index with
-    # maintenance_work_mem=2GB fails with "No space left on device" — which is
-    # /dev/shm filling, not the disk. This is a limit, not a reservation.
+    # Docker defaults /dev/shm to 64MB, and the parallel HNSW build coordinates
+    # workers through it: too little fails with "No space left on device",
+    # which is /dev/shm filling rather than the disk. A limit, not a reservation.
     shm_size: 4gb
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-steam}
@@ -36,9 +32,8 @@ services:
       db:
         condition: service_healthy
     environment:
-      # Host is `db`, not 127.0.0.1: inside the container that address is the
-      # container itself. This is why DATABASE_URL is set here rather than
-      # inherited from .env, which points at the host for local development.
+      # Host is `db`, not 127.0.0.1, which inside a container is the container.
+      # Hence set here rather than inherited from .env.
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-steam}:${POSTGRES_PASSWORD:-steam}@db:5432/${POSTGRES_DB:-steamvibe}
       # The host's Ollama, for the GPU. With `--profile ollama` running instead,
       # override this to http://ollama:11434.
@@ -49,11 +44,9 @@ services:
       CHAT_NUM_CTX: ${CHAT_NUM_CTX:-8192}
       REVIEW_THRESHOLD: ${REVIEW_THRESHOLD:-10}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
-      # config.py defaults to `rerank`, which this container CANNOT do: torch is
-      # not in the image and the GPU is not reachable from it. Left at the
-      # default it would fail to load the cross-encoder once and then log a
-      # fallback WARNING on every search. Overridden here rather than papered
-      # over, the same way ingest is documented as a host-only step.
+      # config.py defaults to `rerank`, which this container CANNOT do: no torch
+      # in the image, no GPU reachable from it. Left at the default it would
+      # warn on every search; overridden here rather than papered over.
       RANK_METHOD: ${RANK_METHOD:-rrf}
     # Docker Desktop resolves host.docker.internal on its own; native Linux
     # does not, and this is what makes the same file work on both.
@@ -73,8 +66,7 @@ services:
       context: ./frontend
       args:
         # Baked into the bundle at build time. The browser runs on the host, so
-        # it reaches the backend through the published port above, not through
-        # the compose network.
+        # it uses the published port, not the compose network.
         VITE_API_URL: ${VITE_API_URL:-http://127.0.0.1:8000}
     depends_on:
       - backend

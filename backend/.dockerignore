@@ -1,5 +1,5 @@
-# The venv is the big one: it is platform-specific, so copying a Windows
-# .venv into a Linux image produces a broken interpreter rather than an error.
+# Platform-specific: a Windows .venv inside a Linux image is a broken
+# interpreter rather than an error.
 .venv/
 __pycache__/
 *.py[cod]
@@ -7,10 +7,9 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 
-# Secrets and local overrides. The image reads config from compose, and baking
-# a .env into a layer would ship the database password with it.
+# The image reads config from compose, and baking a .env into a layer would
+# ship the database password with it.
 .env
 
-# Not needed at runtime, and eval/queries.yaml is - so this is deliberately
-# narrow rather than excluding eval/ wholesale.
+# Narrow rather than excluding eval/ wholesale, because queries.yaml is needed.
 *.md

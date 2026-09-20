@@ -1,7 +1,7 @@
 """Pydantic models for anything crossing a boundary.
 
-Weekend 2's POST /api/search returns SearchResponse directly, so these are
-defined once here rather than redeclared alongside the API.
+The API returns these directly, so they are defined once here rather than
+redeclared alongside it.
 """
 
 from datetime import date
@@ -24,13 +24,10 @@ class ParsedQuery(BaseModel):
     Steam's US storefront. max_required_age came out of eval/failures.md #8.
     """
 
-    # FIELD ORDER IS LOAD-BEARING. This schema is handed to Ollama's `format`,
-    # which constrains generation, so the model emits fields in declaration
-    # order and cannot revise an earlier one. semantic_query is therefore last:
-    # it is the only field whose value depends on all the others, because it is
-    # the query with every extracted constraint removed. When it came first,
-    # both models returned the original sentence unchanged - they had not yet
-    # worked out what to strip. See eval/failures.md.
+    # FIELD ORDER IS LOAD-BEARING: this schema is handed to Ollama's `format`,
+    # so the model emits fields in declaration order and cannot revise an
+    # earlier one. semantic_query stays LAST because it depends on all the
+    # others; declared first, both models returned the sentence unstripped.
     max_price_usd: float | None = None
     min_price_usd: float | None = None
 
@@ -44,19 +41,12 @@ class ParsedQuery(BaseModel):
     multiplayer: bool | None = None
     max_required_age: int | None = None
 
-    # Minimum user reviews. "popular" maps to settings.popular_min_reviews; an
-    # explicit count in the query is used as given. Raises search's review
-    # floor, never lowers it - see search().
+    # Minimum user reviews. Raises search's review floor, never lowers it.
     min_reviews: int | None = None
 
-    # Both set in code by app/title_lookup.py, never by the model - they are
-    # stripped from the schema handed to Ollama. A hallucinated app_id would
-    # silently remove a real result, and the model cannot know real ones.
-    #
-    # reference_game is the title the query pointed at ("like elden ring");
-    # excluded_app_ids filters it out, but only when the query asked. The name
-    # is carried so a filter chip can read "not ELDEN RING" rather than
-    # "excluding 1 title".
+    # Set in code by app/title_lookup.py and stripped from the schema handed to
+    # Ollama: a hallucinated app_id would silently remove a real result. The
+    # name is carried so a chip can read "not ELDEN RING".
     reference_game: str | None = None
     excluded_app_ids: list[int] = Field(default_factory=list)
 
@@ -98,12 +88,9 @@ class SearchResult(BaseModel):
     # 1 - cosine distance. Higher is more similar; roughly 0.5-1.0 in practice.
     score: float
 
-    # What the ORDER BY actually used, once the popularity term is folded in.
-    # Equal to `score` when rank_method is "none". Exposed rather than kept
-    # internal so a result that outranks a closer match is explicable - the same
-    # reason SearchResponse carries `parsed`. Not comparable across rank
-    # methods: "log" produces a similarity-scale number and "rrf" a reciprocal
-    # -rank one, near 1/k.
+    # What the ORDER BY used, once the popularity term is folded in. Equal to
+    # `score` when rank_method is "none", and NOT comparable across rank
+    # methods: "log" is on a similarity scale, "rrf" near 1/k.
     rank_score: float
 
     # The normal price, not the scrape-day sale price. See CLAUDE.md.
@@ -120,80 +107,62 @@ class SearchResult(BaseModel):
 class RelaxationStep(BaseModel):
     """One filter widened because the previous set could not fill a page.
 
-    Carries the before and after rather than only a sentence, so a caller can
-    render it however it likes and a test can assert on values rather than on
-    prose.
+    Carries before and after, not only a sentence, so a test can assert on
+    values rather than on prose.
     """
 
     field: str
     was: str
     now: str
 
-    # Pre-rendered because the phrasing differs per field - a dropped tag list
-    # and a doubled price are not the same sentence.
+    # Pre-rendered: the phrasing differs per field.
     note: str
 
 
 class SearchResponse(BaseModel):
-    # Returned alongside the results so the caller can see what was actually
-    # applied. BUILD_PLAN.md's editable filter chips render this.
+    # What was ACTUALLY applied, already relaxed - the editable chips render it.
     parsed: ParsedQuery
     results: list[SearchResult] = Field(default_factory=list)
 
-    # Tags that matched nothing in the real vocabulary. Reported rather than
-    # silently yielding zero rows - `Base Building` vs `Base-Building` returns
-    # nothing with no error, which is the failure the parser's fuzzy matching
-    # exists to prevent.
+    # Tags that matched nothing real. Reported rather than silently yielding
+    # zero rows: `Base Building` vs `Base-Building` returns nothing, no error.
     unknown_tags: list[str] = Field(default_factory=list)
 
     requested: int
-    # Fewer than requested means the WHERE clause starved the vector index of
-    # candidates. Surfaced rather than swallowed - a search that quietly
-    # under-delivers is the exact failure this project exists to avoid.
+    # Fewer than requested means the WHERE clause starved the index. Surfaced
+    # rather than swallowed.
     returned: int
 
     threshold: int
 
-    # Filters widened to fill this page, in the order they were given up. Empty
-    # is the normal case. `parsed` above reflects what was ACTUALLY applied -
-    # i.e. already relaxed - because that is what produced these results and
-    # what the chips must show; this list is the diff that explains it.
+    # The diff explaining `parsed`, in the order filters were given up. Empty is
+    # the normal case.
     relaxed: list[RelaxationStep] = Field(default_factory=list)
 
-    # None means the ladder never ran - RELAX_FILTERS is off, or run_eval pinned
-    # it off to measure recall against a fixed filter set. A number means it ran,
-    # INCLUDING when it changed nothing, which is the normal case and the one
-    # worth watching: that is the cost relaxation charges every other search.
+    # None means the ladder never ran. A number means it did, INCLUDING when it
+    # changed nothing - that is the cost relaxation charges every search.
     relax_ms: float | None = None
 
     embed_ms: float
     query_ms: float
 
-    # None means no cross-encoder ran - RANK_METHOD is not `rerank`. A number
-    # means it did, INCLUDING when it failed and search fell back to the SQL
-    # ordering, because time spent on a dead container is still time spent.
-    # Surfaced because the reranker's whole trade is recall against latency,
-    # and a cost nobody can see is a cost nobody can argue about.
+    # None means no cross-encoder ran. A number means it did, INCLUDING when it
+    # failed and search fell back - time spent is still time spent.
     rerank_ms: float | None = None
 
     # Whether the cross-encoder actually SCORED this pool, as opposed to being
-    # asked to and failing. rerank_ms alone cannot tell the two apart, and the
-    # difference is not cosmetic: a run that silently fell back returns the
-    # baseline ordering while every label on the output still says `rerank`.
-    # That produced a full 118-query eval table identical to the baseline, which
-    # read as "this model is no better" rather than "this model never ran".
+    # asked to and failing. rerank_ms alone cannot tell those apart, and a
+    # silent fallback returns the baseline ordering under this model's label -
+    # which once read as "no better" rather than "never ran". failures.md #36.
     reranked: bool = False
 
-    # None means no LLM call happened - the caller supplied an already-parsed
-    # query, which is what an edited filter chip does. Set by the API endpoint
-    # rather than by search(), which knows nothing about parsing.
+    # None means no LLM call happened: the caller supplied an already-parsed
+    # query, which is what an edited chip does. Set by the endpoint, not by
+    # search(), which knows nothing about parsing.
     parse_ms: float | None = None
 
     # computed_field, not a bare @property: a plain property is invisible to
-    # model_dump_json(), so the browser would never receive this and the
-    # "filters starved the index" warning would silently disappear at the API
-    # boundary. Still an ordinary property from Python, so search.py's CLI
-    # warning is unaffected.
+    # model_dump_json(), so this warning would vanish at the API boundary.
     @computed_field  # type: ignore[prop-decorator]  # pydantic supports this
     @property
     def under_delivered(self) -> bool:
@@ -203,10 +172,8 @@ class SearchResponse(BaseModel):
 class SearchRequest(BaseModel):
     """POST /api/search body.
 
-    `parsed` is the editable-chip path: when the caller sends one back, its
-    filters are used verbatim and no chat model runs. Re-parsing `query`
-    instead would re-derive whichever chip the user just removed, and charge
-    ~0.7s to do it.
+    `parsed` is the editable-chip path: sent back, its filters are used verbatim
+    and no chat model runs. Re-parsing would re-derive the chip just removed.
     """
 
     query: str
@@ -215,16 +182,13 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
     threshold: int | None = None
 
-    # None follows settings.relax_filters. False is how run_eval measures recall
-    # against a fixed filter set.
+    # None follows settings.relax_filters; False is how run_eval pins it off.
     relax: bool | None = None
 
 
 class GameDetail(BaseModel):
-    """GET /api/game/{app_id}. Everything a click-through page needs.
-
-    Wider than SearchResult on purpose: that one is repeated 10x in a list and
-    stays lean, this one is fetched once.
+    """GET /api/game/{app_id}. Wider than SearchResult, which is repeated 10x
+    in a list and stays lean; this one is fetched once.
     """
 
     app_id: int
@@ -281,11 +245,10 @@ class Explanation(BaseModel):
 class VerifiedExplanation(BaseModel):
     """What the API returns: the line, plus whether a model actually wrote it.
 
-    `grounded=False` means the model's explanation cited something the game does
-    not have and was DISCARDED - `why` is then a deterministic line built from
-    the game's own tags. The flag exists so the UI can say which it is showing
-    and the eval can count. A fallback presented as an explanation would be the
-    exact failure this feature is built to avoid.
+    `grounded=False` means the model cited something the game does not have and
+    was DISCARDED; `why` is then built deterministically from the game's own
+    tags. The flag travels so the UI can say which it is showing - a fallback
+    presented as an explanation is the failure this feature exists to prevent.
     """
 
     app_id: int
@@ -293,34 +256,26 @@ class VerifiedExplanation(BaseModel):
     grounded: bool
 
     # Empty when grounded. One of "unknown_app_id", "unlisted_tag",
-    # "prose_tag", "missing" - kept because "4% hallucinated" is three
-    # different bugs with three different fixes, and an aggregate hides which.
+    # "prose_tag", "missing": one hallucination rate is several different bugs.
     discard_reason: str | None = None
 
 
 class ExplainRequest(BaseModel):
     """POST /api/explain body.
 
-    Deliberately carries app_ids and NOT the games themselves. Name, tags and
-    description are looked up server-side, because a verifier that grades the
-    model against client-supplied tags proves nothing at all.
+    Carries app_ids and NOT the games themselves: a verifier fed
+    client-supplied tags is checking the model against the client.
     """
 
-    # The SEMANTIC remainder - `parsed.semantic_query` from the search response -
-    # never the text the user typed. The model sees tags and a blurb but no
-    # platform, price, year or age, so a constraint left in the query reads as a
-    # mismatch it is told to report: the raw "...under 20 dollars on linux" got
-    # "does not run on Linux" for 15 of 15 explanations, all of them Linux games,
-    # and every one passed verification because Linux is not a tag. The stripped
-    # query got 0 of 15. SQL already guarantees the filters; do not re-litigate
-    # them here.
+    # MUST be `parsed.semantic_query`, never the typed text. The model sees tags
+    # but no platforms or prices, so a constraint left in reads as a mismatch it
+    # is told to report - the raw query denied Linux for 15 of 15 Linux games,
+    # the stripped one for 0 of 15.
     query: str
     app_ids: list[int] = Field(min_length=1, max_length=20)
 
-    # The tags the query asked for, used ONLY to pick which of a game's own tags
-    # the deterministic fallback line shows. Never trusted as ground truth - the
-    # verifier reads `games.tags` from the database - so a caller sending
-    # nonsense here degrades its own fallback text and nothing else.
+    # Used ONLY to pick which of a game's own tags the fallback line shows.
+    # Never ground truth - the verifier reads `games.tags` from the database.
     wanted_tags: list[str] = Field(default_factory=list)
 
 
@@ -332,17 +287,15 @@ class ExplainResponse(BaseModel):
 class StageStats(BaseModel):
     """One pipeline stage's latency over the window.
 
-    `max` is carried alongside because at small n it is the honest companion to
-    p50 - a single cold search that paid 22s of model load is invisible in a
-    median and obvious here.
+    `max` rides alongside p50: a cold search that paid 22s of model load is
+    invisible in a median and obvious here.
     """
 
     n: int
     p50: float
 
-    # None until app/metrics.py has MIN_P95_SAMPLES samples. Below that the
-    # "95th percentile" is literally the maximum, and printing the maximum under
-    # a p95 label is a wrong label rather than an imprecise number.
+    # None below app/metrics.py's MIN_P95_SAMPLES, where the "95th percentile"
+    # is literally the maximum - a wrong label, not an imprecise number.
     p95: float | None = None
 
     max: float
@@ -351,34 +304,29 @@ class StageStats(BaseModel):
 class EndpointStats(BaseModel):
     n: int
 
-    # Keyed by the SearchResponse field name (parse_ms, embed_ms, ...). A stage
-    # that never ran is ABSENT rather than zero: rerank_ms is None wherever
-    # RANK_METHOD is not `rerank`, which is every container, and a 0.0 there
-    # would read as a stage that costs nothing.
+    # Keyed by the SearchResponse field name. A stage that never ran is ABSENT
+    # rather than zero, which would read as a stage that costs nothing.
     stages: dict[str, StageStats] = Field(default_factory=dict)
 
 
 class StatsResponse(BaseModel):
     """GET /api/stats.
 
-    The three scope fields are part of the payload rather than only the docs,
-    because these numbers are the easiest in the project to quote wrongly. The
-    window is the last `window` REQUESTS, not a period of time; it covers this
-    process only and resets on restart; and it sees API traffic only, so it is
-    not comparable with the median run_eval prints.
+    Every number ships with its scope, because these are the easiest in the
+    project to quote wrongly: the window is the last `window` REQUESTS, not a
+    period of time; it is per-process and resets on restart; and it records at
+    the endpoint, so it is not the same measurement run_eval prints.
     """
 
     window: int
     uptime_s: float
 
-    # Echoed so a caller can render "p95 needs 20 requests, this has 7" rather
-    # than an unexplained blank.
+    # Echoed so a caller can explain a blank p95 rather than just showing one.
     min_p95_samples: int
 
     search: EndpointStats
     explain: EndpointStats
 
-    # Monotonic since process start, not windowed. A fallback is rare enough
-    # that the total is more useful than a rate, and a rate over a sliding
-    # window would quietly heal itself.
+    # Monotonic since process start, not windowed: a rate over a sliding window
+    # would quietly heal itself.
     fallbacks: dict[str, int] = Field(default_factory=dict)

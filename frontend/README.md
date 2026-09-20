@@ -23,28 +23,25 @@ search reports a failed fetch.
 ## The four things worth knowing
 
 **`VITE_API_URL` is baked in at build time**, not read at runtime — Vite inlines
-`import.meta.env`. The Dockerfile takes it as a build ARG. The default is
-`http://127.0.0.1:8000`, which is right for both `npm run dev` and the container,
-because the browser runs on the host either way.
+`import.meta.env`, and the Dockerfile takes it as a build ARG. The default is
+right for both `npm run dev` and the container, because the browser runs on the
+host either way.
 
-**Editing a chip does not re-parse.** `chips.ts` turns a `ParsedQuery` into
-removable chips; removing one posts the modified `ParsedQuery` straight back as
-`SearchRequest.parsed`, and the backend then skips the chat model entirely.
-Measured 0.095s against 1.347s. Re-parsing would also re-derive the chip the
-user just deleted.
+**Editing a chip does not re-parse.** Removing one posts the modified
+`ParsedQuery` straight back as `SearchRequest.parsed`, and the backend skips the
+chat model entirely — 0.095s against 1.347s. Re-parsing would also re-derive the
+chip the user just deleted.
 
 **Explanations are a second request.** Results render first, then `/api/explain`
-fills in a "why this matches" line per card. `explain()` in `api.ts` never
-throws: the list is correct and useful without them. A line the backend could
-not verify against the game's real tags arrives with `grounded: false`, and
-`ResultCard.tsx` renders it differently and says so on hover — a canned sentence
-presented as a real explanation is the exact failure the verification exists to
-prevent.
+fills in a line per card. `explain()` never throws: the list is correct without
+them. A line the backend could not verify against the game's real tags arrives
+with `grounded: false`, and `ResultCard.tsx` renders it differently and says so
+on hover — a canned sentence presented as a real explanation is the exact
+failure the verification exists to prevent.
 
-**Relaxed filters are shown above the results, not below.** When the backend
-widens a filter to fill the page, `response.parsed` holds what was *actually*
-applied and `response.relaxed` is the diff. Silently widening a constraint the
-user typed is worse than returning a short page.
+**Relaxed filters are shown above the results, not below.** `response.parsed`
+holds what was *actually* applied and `response.relaxed` is the diff. Silently
+widening a constraint the user typed is worse than a short page.
 
 ## Files
 

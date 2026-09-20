@@ -1,15 +1,11 @@
 """Add the HNSW index on games.embedding.
 
-Deliberately separate from 0001, and run only after ingest/embed_all.py has
-finished. Building this index incrementally while 130k rows are inserted means
-rewiring the graph 130k times; building it once over a finished set is far
-faster. CLAUDE.md states the rule.
+Separate from 0001 and run only after ingest/embed_all.py finishes: building
+the graph incrementally means rewiring it 130k times.
 
-The operator class is the part to read carefully. `vector_cosine_ops` must match
-the `<=>` operator used by search. If they disagree, Postgres does not error —
-it silently ignores the index and sequentially scans every row. Results stay
-correct and searches are ~100x slower with nothing to indicate why. The
-verification step in the runbook checks the query plan for this reason.
+`vector_cosine_ops` must match the `<=>` operator used by search. A mismatch
+does not error - Postgres silently ignores the index and scans every row, so
+results stay correct and searches are ~100x slower with nothing to show why.
 
 Revision ID: 0003
 Revises: 0002

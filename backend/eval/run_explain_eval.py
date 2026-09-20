@@ -5,29 +5,19 @@
     uv run python -m eval.run_explain_eval --self-test     # feed it known lies
     uv run python -m eval.run_explain_eval --show          # print every line
 
-The number this produces is the DISCARD RATE, not a quality score. An LLM asked
-to justify a search result will claim a game is `Souls-like` because the sentence
-reads better that way, and a plausible sentence attached to a real game is the
-hardest kind of wrong to catch - it looks exactly like the feature working. So
-app/explain.py verifies every claim against `games.tags` and throws away what
-fails, and this counts how often that happens.
-
-Discards are split by REASON on purpose. "4% hallucinated" is three different
-bugs with three different fixes:
+The number is the DISCARD RATE, not a quality score: app/explain.py verifies
+every claim against `games.tags` and throws away what fails, and this counts how
+often that happens. Split by REASON, because one rate is three different bugs:
 
   unlisted_tag  cited_tags named a tag the game does not have.
   prose_tag     the sentence names one that cited_tags did not declare.
-  missing       no entry came back for that game at all - a dead model, an
-                unparseable item, or an app_id we never asked about.
+  missing       no entry came back - a dead model, an unparseable item, or an
+                app_id nobody asked about.
 
 RUN --self-test FIRST, and after any change to the verifier. A checker that has
-never gone red is not known to work: the first live run of this one discarded 2
-of 5 CORRECT explanations, because `Farming` and `Farming Sim` are both real
-tags and the prose scan matched the short one inside the long one. That bug
-inflated the headline number in the safe-looking direction, which is the
+never gone red is not known to work: this one once discarded 2 of 5 CORRECT
+explanations, inflating the headline in the safe-looking direction - the
 direction nobody investigates.
-
-Throwaway/eval category per CLAUDE.md: if it runs, it's fine.
 """
 
 import argparse

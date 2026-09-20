@@ -26,8 +26,7 @@ down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-# Must match EMBEDDING_DIM in app/models.py. nomic-embed-text emits 768;
-# Weekend 3's bge-m3 emits 1024 and will need its own migration.
+# Must match EMBEDDING_DIM in app/models.py. Widened to 1024 by 0006.
 EMBEDDING_DIM = 768
 
 
@@ -44,8 +43,8 @@ def upgrade() -> None:
         # Source is 'Mon D, YYYY' for 100% of rows, so this parses without a
         # fallback path.
         sa.Column("release_date", sa.Date(), nullable=True),
-        # US storefront prices. price_eur is added in Weekend 3 from the
-        # storefront API with ?cc=de. Do not filter euros against this column.
+        # US storefront prices, on the day of the scrape. 0002 adds the
+        # generated list_price_usd, which is what search filters on.
         sa.Column("price_usd", sa.Numeric(10, 2), nullable=True),
         # Derived at ingest as (price == 0); the source has no is_free field.
         # 28,255 rows are price-0, some of which are unreleased rather than free.
@@ -124,8 +123,8 @@ def upgrade() -> None:
     )
     op.create_index("ix_game_genres_genre", "game_genres", ["genre"])
 
-    # Steam's own categories ('Multi-player', 'Co-op'). Weekend 2's multiplayer
-    # filter reads these — more reliable for that than community tags.
+    # Steam's own categories ('Multi-player', 'Co-op'). The multiplayer filter
+    # reads these - more reliable for that than community tags.
     op.create_table(
         "game_categories",
         sa.Column("app_id", sa.Integer(), nullable=False),
